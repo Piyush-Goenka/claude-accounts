@@ -15,7 +15,7 @@
 #  They only replace this one file (previous version kept as .bak).
 # ══════════════════════════════════════════════════════════════════
 
-CLAUDE_ACCOUNTS_VERSION="1.0.0"
+CLAUDE_ACCOUNTS_VERSION="1.0.1"
 
 # ── configuration ──────────────────────────────────────────────────
 _CA_REPO="Piyush-Goenka/claude-accounts"
