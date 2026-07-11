@@ -32,7 +32,7 @@ claude-delete mohan     # remove profile
 **First login tip:** your browser is probably already signed into claude.ai as
 your main account. When the login page opens, pick **"use a different account"**
 or copy the URL into an **incognito window**, then sign in with the second
-account's credentials. You can also use a **API Key** to sign in into claude.
+account's credentials.
 
 ## Updates
 
