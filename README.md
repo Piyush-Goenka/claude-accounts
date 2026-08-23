@@ -25,9 +25,22 @@ Then restart your terminal.
 ```bash
 claude-create mohan     # create profile → prints next steps
 claude-mohan            # launch it → run /login once
-claude-accounts         # JSON registry: which profile = which account, logged in or not
+claude-accounts         # colorful table of all accounts: live usage bars + login state
 claude-delete mohan     # remove profile
 ```
+
+`claude-accounts` shows, per account, the session (5-hour) and weekly usage in
+percent with reset times (fetched live from Anthropic's usage endpoint, the same
+one `/usage` inside Claude Code hits) and the login state, including how many
+days until the login (refresh token) expires. Add `--json` for machine-readable
+output. Dirs like `~/.claude-science` (the Claude research beta) that are not
+account profiles are excluded automatically.
+
+**Logins expire when stale.** Anthropic's refresh tokens have their own expiry
+(30 days by default). Using an account regularly usually renews it, but once a
+profile shows only a few days left (Claude Code itself warns at 3 days or less),
+run `/login` in that profile to mint a fresh one. `claude-accounts` shows the
+countdown for every account so no login dies silently.
 
 **First login tip:** your browser is probably already signed into claude.ai as
 your main account. When the login page opens, pick **"use a different account"**
