@@ -21,7 +21,11 @@ Added a few sanity checks and more good UX.
   account: session (5-hour) and weekly utilization bars (green/yellow/red by
   load) with reset times, pulled from Anthropic's `/api/oauth/usage` endpoint.
   Per-model weekly columns (Fable, Opus, Sonnet, anything the API reports as a
-  scoped weekly limit) appear automatically when those limits exist.
+  scoped weekly limit) appear automatically when those limits exist. When a
+  live fetch fails (rate limit, offline), it falls back to the snapshot Claude
+  Code itself keeps in each profile's .claude.json. The grid auto-shrinks to
+  fit narrow terminals (shorter bars, then no reset times, then percent-only,
+  then truncated emails and compact labels).
   Colors disable when piped or with NO_COLOR. Old JSON output via `--json`.
 - Shows login expiry: days until each account's refresh token expires, with a
   "run /login" nudge at 3 days or less (matches Claude Code's own warning).

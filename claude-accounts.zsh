@@ -183,16 +183,27 @@ def keychain_cred(svc):
     except Exception:
         return {}
 
-def fetch_usage(token):
-    # same endpoint + headers the claude binary uses for /usage
+def cfg_path(profile, d):
+    return home + '/.claude.json' if profile == 'default' else os.path.join(d, '.claude.json')
+
+def fetch_usage(profile, d, token):
+    # same endpoint + headers the claude binary uses for /usage; on failure
+    # (rate limit, offline, expired token) fall back to the snapshot claude
+    # itself keeps in the profile's .claude.json (cachedUsageUtilization)
     r = subprocess.run(['curl', '-fsSL', '--max-time', '6',
                         'https://api.anthropic.com/api/oauth/usage',
                         '-H', 'Authorization: Bearer ' + token,
                         '-H', 'anthropic-beta: oauth-2025-04-20',
                         '-H', 'Content-Type: application/json'],
                        capture_output=True, text=True)
+    if r.returncode == 0:
+        try:
+            return json.loads(r.stdout)
+        except Exception:
+            pass
     try:
-        return json.loads(r.stdout) if r.returncode == 0 else None
+        cached = json.load(open(cfg_path(profile, d))).get('cachedUsageUtilization') or {}
+        return cached.get('utilization')
     except Exception:
         return None
 
@@ -205,8 +216,7 @@ def limit(u, key):
 def entry(profile, d, svc):
     email = None
     try:
-        cfg_path = home + '/.claude.json' if profile == 'default' else os.path.join(d, '.claude.json')
-        cfg = json.load(open(cfg_path))
+        cfg = json.load(open(cfg_path(profile, d)))
         email = (cfg.get('oauthAccount') or {}).get('emailAddress')
     except Exception:
         pass
@@ -232,7 +242,7 @@ for d in sorted(glob.glob(home + '/.claude-*')):
     rows.append(entry(name, d, f'Claude Code-credentials-{h}'))
 
 with ThreadPoolExecutor(max_workers=8) as ex:
-    usages = list(ex.map(lambda r: fetch_usage(r['_token']) if r['_token'] else None, rows))
+    usages = list(ex.map(lambda r: fetch_usage(r['profile'], r['dir'], r['_token']) if r['_token'] else None, rows))
 
 for r, u in zip(rows, usages):
     del r['_token']
@@ -282,28 +292,33 @@ class Cell:
     def __init__(self, plain, colored=None):
         self.plain, self.colored = plain, colored if colored is not None else plain
 
-def limit_cell(r, l, out_text='-'):
+def limit_cell(r, l, out_text='-', bar_w=10, show_reset=True):
     if not r['loggedIn']:
         return Cell('-') if out_text == '-' else Cell(out_text, c(DIM, out_text))
     if r['usage'] is None:
         return Cell('?', c(YELLOW, '?'))
     if not l or l['percent'] is None:
         return Cell('-')
-    p, reset = l['percent'], fmt_reset(l['resetsAt']) if l['resetsAt'] else ''
-    plain = f"{'█' * 10} {p:3d}% {reset}".rstrip()
-    colored = f"{bar(p)} {c(pcolor(p), f'{p:3d}%')} {c(DIM, reset)}".rstrip()
-    return Cell(plain, colored)
+    p = l['percent']
+    reset = fmt_reset(l['resetsAt']) if l['resetsAt'] and show_reset else ''
+    pre_p, pre_c = ('█' * bar_w + ' ', bar(p, bar_w) + ' ') if bar_w else ('', '')
+    suf_p, suf_c = (f' {reset}', f' {c(DIM, reset)}') if reset else ('', '')
+    return Cell(f"{pre_p}{p:3d}%{suf_p}",
+                f"{pre_c}{c(pcolor(p), f'{p:3d}%')}{suf_c}")
 
-def login_cell(r):
+def login_cell(r, tight=False):
     if not r['loggedIn']:
-        return Cell('✗ /login', c(RED, '✗ /login'))
+        t = '✗ out' if tight else '✗ /login'
+        return Cell(t, c(RED, t))
     d = r['loginExpiresInDays']
     if d is None:
         return Cell('✓ ok', c(GREEN, '✓ ok'))
     if d <= 0:
-        return Cell('✗ expired · /login', c(RED, '✗ expired · /login'))
+        t = '✗ exp' if tight else '✗ expired · /login'
+        return Cell(t, c(RED, t))
     if d <= 3:
-        return Cell(f'⚠ {d:.0f}d · /login', c(YELLOW, f'⚠ {d:.0f}d · /login'))
+        t = f'⚠ {d:.0f}d' if tight else f'⚠ {d:.0f}d · /login'
+        return Cell(t, c(YELLOW, t))
     return Cell(f'✓ {d:.0f}d', c(GREEN, f'✓ {d:.0f}d'))
 
 # per-model weekly columns: scoped limits (Fable, Opus, ...) from the limits
@@ -321,28 +336,69 @@ cols += [f'WEEK {n.upper()}' for n in scoped_names]
 cols += [f'WEEK {t.upper()}' for k, t in legacy]
 cols.append('LOGIN')
 
-table = []
-for r in rows:
-    u = r['usage'] or {}
-    row = [Cell(r['profile'], c(CYAN, r['profile'])),
-           Cell(r['account'] or '-', c(GRAY, r['account'] or '-')),
-           limit_cell(r, u.get('session'), out_text='logged out'),
-           limit_cell(r, u.get('week'))]
-    row += [limit_cell(r, next((s for s in u.get('scopedWeekly') or [] if s['name'] == n), None))
-            for n in scoped_names]
-    row += [limit_cell(r, u.get(k)) for k, t in legacy]
-    row.append(login_cell(r))
-    table.append(row)
+def trunc(s, n):
+    return s if len(s) <= n else s[:max(1, n - 1)] + '…'
 
-header = [Cell(t, c(HDR, t)) for t in cols]
-w = [max(len(row[i].plain) for row in [header] + table) for i in range(len(cols))]
+def build(bar_w, show_reset, acc_max=None, tight=False):
+    table = []
+    for r in rows:
+        u = r['usage'] or {}
+        acc = r['account'] or '-'
+        if acc_max:
+            acc = trunc(acc, acc_max)
+        out_text = 'out' if tight else 'logged out'
+        row = [Cell(r['profile'], c(CYAN, r['profile'])),
+               Cell(acc, c(GRAY, acc)),
+               limit_cell(r, u.get('session'), out_text, bar_w, show_reset),
+               limit_cell(r, u.get('week'), '-', bar_w, show_reset)]
+        row += [limit_cell(r, next((s for s in u.get('scopedWeekly') or [] if s['name'] == n), None),
+                           '-', bar_w, show_reset) for n in scoped_names]
+        row += [limit_cell(r, u.get(k), '-', bar_w, show_reset) for k, t in legacy]
+        row.append(login_cell(r, tight))
+        table.append(row)
+    header = [Cell(t, c(HDR, t)) for t in cols]
+    w = [max(len(row[i].plain) for row in [header] + table) for i in range(len(cols))]
+    return header, table, w
+
+# same table, smaller: shrink bars, then drop reset times, then truncate the
+# account column, until the grid fits the terminal width
+import shutil
+term_w = shutil.get_terminal_size().columns if sys.stdout.isatty() else 10**9
+pad = 1
+total_w = lambda w: 2 + sum(w) + (2 * pad + 1) * len(w) + 1
+
+configs = [(10, True), (8, True), (6, True), (6, False), (4, False), (0, False)]
+for bar_w, show_reset in configs:
+    header, table, w = build(bar_w, show_reset)
+    if total_w(w) <= term_w:
+        break
+else:
+    # nothing fits with full emails: truncate the account column, keeping it
+    # as wide as possible (>= 16 chars if we can, >= 8 as a last resort)
+    done = False
+    for min_acc in (16, 8):
+        for bar_w, show_reset in configs:
+            header, table, w = build(bar_w, show_reset)
+            slack = w[1] - (total_w(w) - term_w)
+            if slack >= min_acc:
+                header, table, w = build(bar_w, show_reset, acc_max=slack)
+                done = True
+                break
+        if done:
+            break
+    if not done:
+        # ultra-narrow: shorten login labels, then drop cell padding
+        for pad in (1, 0):
+            header, table, w = build(0, False, acc_max=8, tight=True)
+            if total_w(w) <= term_w:
+                break
 
 def rule(l, m, r):
-    return '  ' + c(DGRAY, l + m.join('─' * (wi + 2) for wi in w) + r)
+    return '  ' + c(DGRAY, l + m.join('─' * (wi + 2 * pad) for wi in w) + r)
 
 def render(row):
     sep = c(DGRAY, '│')
-    inner = sep.join(' ' + cell.colored + ' ' * (w[i] - len(cell.plain)) + ' '
+    inner = sep.join(' ' * pad + cell.colored + ' ' * (w[i] - len(cell.plain)) + ' ' * pad
                      for i, cell in enumerate(row))
     return '  ' + sep + inner + sep
 
