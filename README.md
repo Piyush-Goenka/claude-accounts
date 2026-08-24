@@ -59,8 +59,8 @@ itself **before** running. Manual check: `claude-accounts-update`.
 curl -fsSL https://raw.githubusercontent.com/Piyush-Goenka/claude-accounts/main/uninstall.sh | bash
 ```
 
-Removes the tool only; run `claude-delete <name>` for each profile first if you
-also want those logins gone.
+Removes every profile (dirs + their logins) except your default account, then
+removes the tool itself.
 
 ## Caveats, honestly
 

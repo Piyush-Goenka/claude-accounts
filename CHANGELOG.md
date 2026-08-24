@@ -33,3 +33,6 @@ Added a few sanity checks and more good UX.
   research beta) from aliases, the registry, and create/delete.
 - Auto-update only runs when the published release is strictly newer, so a
   locally newer copy is never downgraded.
+- All commands print in a consistent Claude-palette style (aligned ✓/·/✗ rows,
+  no raw paths). Uninstall now removes every profile except the default
+  account, then the tool.

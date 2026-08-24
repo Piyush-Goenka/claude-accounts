@@ -1,27 +1,45 @@
 #!/usr/bin/env bash
 # claude-accounts uninstaller
-# Removes the tool ONLY. Profile dirs (~/.claude-*) and Keychain credentials
-# are left untouched — remove those per-profile with `claude-delete <name>`
-# BEFORE uninstalling if you want them gone too.
+# Removes every profile (~/.claude-* dirs + their Keychain logins) EXCEPT the
+# default account (~/.claude), then removes the tool itself.
 set -euo pipefail
 
 DEST="$HOME/.config/zsh/claude-accounts.zsh"
 ZSHRC="$HOME/.zshrc"
 
-rm -f "$DEST" "$DEST.bak" "$HOME/.cache/claude-accounts-check"
-echo "removed $DEST"
+# output helpers (Claude palette; plain text when not a terminal)
+c()    { if [[ -t 1 ]]; then printf '\e[%sm%s\e[0m' "$1" "$2"; else printf '%s' "$2"; fi; }
+row()  { printf '  %s %-22s %s\n' "$(c "$1" "$2")" "$3" "$(c '38;5;180' "${4:-}")"; }
+ok()   { row '38;5;173' '✓' "$1" "${2:-}"; }
+skip() { row '2'        '·' "$1" "${2:-}"; }
+nxt()  { printf '\n  %s  %s\n' "$(c '1;38;5;173' 'next')" "$(c '1' "$1")"; }
+
+echo ""
+# remove every profile except the default account (same steps as claude-delete)
+for d in "$HOME"/.claude-*/; do
+  [[ -d "$d" ]] || continue
+  d="${d%/}"
+  name="${d##*/.claude-}"
+  [[ "$name" == "science" ]] && continue    # not an account profile
+  hash="$(printf '%s' "$d" | shasum -a 256 | cut -c1-8)"
+  security delete-generic-password -s "Claude Code-credentials-$hash" >/dev/null 2>&1 || true
+  rm -rf "$d"
+  ok "profile removed" "$name"
+done
+
+if [[ -f "$DEST" ]]; then
+  rm -f "$DEST" "$DEST.bak" "$HOME/.cache/claude-accounts-check"
+  ok "tool removed"
+else
+  skip "tool" "not installed"
+fi
 
 if grep -qF 'claude-accounts.zsh' "$ZSHRC" 2>/dev/null; then
   sed -i '' '/# Claude multi-account manager/d;/claude-accounts\.zsh/d' "$ZSHRC"
-  echo "removed import line from $ZSHRC"
+  ok "shell cleaned"
+else
+  skip "shell" "already clean"
 fi
 
-REMAINING=$(ls -d "$HOME"/.claude-*/ 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$REMAINING" != "0" ]]; then
-  echo ""
-  echo "note: $REMAINING profile dir(s) still exist (~/.claude-*) with their"
-  echo "Keychain credentials. Reinstall and use 'claude-delete <name>' to remove"
-  echo "them cleanly, or delete dirs manually + credentials via Keychain Access."
-fi
-
-echo "✅ uninstalled. restart your terminal to clear loaded functions/aliases."
+nxt "open a new terminal"
+echo ""

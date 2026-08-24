@@ -109,6 +109,16 @@ claude-accounts-update() {
   _ca_install_latest && echo "done (previous version saved as $_CA_FILE.bak)"
 }
 
+# ── output helpers (Claude palette; plain text when not a terminal) ──
+_ca_c() { if [[ -t 1 ]]; then printf '\e[%sm%s\e[0m' "$1" "$2"; else printf '%s' "$2"; fi }
+# _ca_row <color> <icon> <label> [value]
+_ca_row() { printf '  %s %-22s %s\n' "$(_ca_c "$1" "$2")" "$3" "$(_ca_c '38;5;180' "${4:-}")" }
+_ca_ok()   { _ca_row '38;5;173' '✓' "$1" "${2:-}" }
+_ca_skip() { _ca_row '2'        '·' "$1" "${2:-}" }
+_ca_err()  { _ca_row '38;5;167' '✗' "$1" "${2:-}" >&2 }
+_ca_dim()  { printf '  %s\n' "$(_ca_c 2 "$1")" }
+_ca_next() { printf '\n  %s  %s\n' "$(_ca_c '1;38;5;173' 'next')" "$(_ca_c '1' "$1")" }
+
 # ── commands ───────────────────────────────────────────────────────
 
 claude-create() {
@@ -117,21 +127,24 @@ claude-create() {
   fi
   local name="${1#claude-}"
   if [[ -z "$name" || "$name" == *[^a-zA-Z0-9_-]* ]]; then
-    echo "usage: claude-create <name>   (letters, numbers, - and _ only)"; return 1
+    _ca_err "usage" "claude-create <name>   (letters, numbers, - and _ only)"; return 1
   fi
   if (( ${_CA_EXCLUDE[(Ie)$name]} )); then
-    echo "'$name' is reserved (~/.claude-$name is not an account profile)"; return 1
+    _ca_err "reserved name" "$name"; return 1
   fi
   local dir="$HOME/.claude-$name"
-  if [[ -e "$dir" ]]; then echo "profile $dir already exists"; return 1; fi
+  if [[ -e "$dir" ]]; then _ca_err "already exists" "$name"; return 1; fi
   mkdir -p "$dir"
   local f
   for f in projects history.jsonl settings.json CLAUDE.md skills plugins; do
     ln -sfn "$HOME/.claude/$f" "$dir/$f"
   done
   alias "claude-$name"="CLAUDE_CONFIG_DIR=$dir claude"
-  echo "profile ready: run  claude-$name  then /login"
-  echo "(in the browser pick 'use a different account' or use an incognito window)"
+  _ca_ok "profile created"  "$name"
+  _ca_ok "synced with main"   "projects · history · settings · CLAUDE.md · skills · plugins"
+  _ca_ok "alias ready"       "claude-$name"
+  _ca_next "claude-$name  →  /login"
+  _ca_dim "      in the browser pick \"use a different account\" or use an incognito window"
 }
 
 claude-delete() {
@@ -140,24 +153,23 @@ claude-delete() {
   fi
   local name="${1#claude-}"
   if [[ -z "$name" || "$name" == *[^a-zA-Z0-9_-]* ]]; then
-    echo "usage: claude-delete <name>"; return 1
+    _ca_err "usage" "claude-delete <name>"; return 1
   fi
   if (( ${_CA_EXCLUDE[(Ie)$name]} )); then
-    echo "'$name' is reserved (~/.claude-$name is not an account profile); not touching it"; return 1
+    _ca_err "reserved name" "$name"; return 1
   fi
   local dir="$HOME/.claude-$name"
-  if [[ ! -d "$dir" ]]; then echo "no profile at $dir"; return 1; fi
+  if [[ ! -d "$dir" ]]; then _ca_err "no such profile" "$name"; return 1; fi
   # this profile's Keychain item: Claude Code-credentials-<sha256(dir)[0:8]>
   local hash
   hash="$(printf '%s' "$dir" | shasum -a 256 | cut -c1-8)"
   if security delete-generic-password -s "Claude Code-credentials-$hash" >/dev/null 2>&1; then
-    echo "keychain credential removed"
-  else
-    echo "no keychain credential found (never logged in, or already clean)"
+    _ca_ok "keychain credential"  "removed"
   fi
   rm -rf "$dir"          # dir holds only symlinks; shared ~/.claude data is safe
+  _ca_ok "profile"      "$name removed"
   unalias "claude-$name" 2>/dev/null
-  echo "removed $dir and alias claude-$name"
+  _ca_ok "alias"        "claude-$name removed"
 }
 
 claude-accounts() {
@@ -408,6 +420,5 @@ for row in table:
     print(rule('├', '┼', '┤'))
     print(render(row))
 print(rule('└', '┴', '┘'))
-print(c(DIM, '  usage is live per account · ? = fetch failed (relaunch that profile) · --json for machine output'))
 EOF
 }
