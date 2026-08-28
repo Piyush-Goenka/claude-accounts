@@ -12,11 +12,16 @@
 #                              (session + weekly %), login expiry; --json for JSON
 #    claude-accounts-update    update this tool to the latest release
 #
+#  Usage numbers are live for every profile, not just the one you last
+#  ran: an access token lives ~8h and the claude binary only renews the
+#  one it launches, so claude-accounts renews expired tokens itself and
+#  writes the rotated pair back to that profile's Keychain item.
+#
 #  Updates NEVER touch profile dirs (~/.claude-*) or Keychain creds.
 #  They only replace this one file (previous version kept as .bak).
 # ══════════════════════════════════════════════════════════════════
 
-CLAUDE_ACCOUNTS_VERSION="1.1.0"
+CLAUDE_ACCOUNTS_VERSION="1.2.0"
 
 # ── configuration ──────────────────────────────────────────────────
 _CA_REPO="Piyush-Goenka/claude-accounts"
@@ -177,47 +182,133 @@ claude-accounts() {
     _CA_REENTRY=1 claude-accounts "$@"; return $?
   fi
   _CA_EXCLUDE_CSV="${(j:,:)_CA_EXCLUDE}" python3 - "$@" << 'EOF'
-import json, glob, os, sys, hashlib, subprocess, datetime
+import json, glob, os, sys, re, time, hashlib, subprocess, datetime
 from concurrent.futures import ThreadPoolExecutor
 
 home = os.path.expanduser('~')
 exclude = set(filter(None, os.environ.get('_CA_EXCLUDE_CSV', '').split(',')))
 as_json = '--json' in sys.argv
 now = datetime.datetime.now().astimezone()
+warnings = []
 
-def keychain_cred(svc):
+# the OAuth client id and token endpoint the claude binary itself uses
+CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
+USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+
+def keychain_read(svc):
+    # returns (full credential blob, the item's acct attribute), or (None, None)
     r = subprocess.run(['security', 'find-generic-password', '-s', svc, '-w'],
                        capture_output=True, text=True)
     if r.returncode != 0:
+        return None, None
+    a = subprocess.run(['security', 'find-generic-password', '-s', svc],
+                       capture_output=True, text=True)
+    m = re.search(r'"acct"<blob>="([^"]*)"', a.stdout + a.stderr)
+    acct = m.group(1) if m else None
+    try:
+        return json.loads(r.stdout.strip()), acct
+    except Exception:
+        return {}, acct
+
+def keychain_write(svc, acct, blob):
+    # -X takes the secret hex-encoded: it keeps the plaintext out of the process
+    # argument list, and unlike prompting for it on stdin it is not capped at
+    # 128 bytes (which would silently truncate and destroy the credential)
+    hexed = json.dumps(blob).encode().hex()
+    r = subprocess.run(['security', 'add-generic-password', '-U', '-s', svc,
+                        '-a', acct or os.environ.get('USER', ''), '-X', hexed],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+def refresh_access_token(svc, acct, blob):
+    # trade the refresh token for a fresh access token. the server rotates the
+    # refresh token, so the new pair MUST be written back or the profile is
+    # logged out; the old credential is left untouched on any failure.
+    oauth = (blob or {}).get('claudeAiOauth') or {}
+    rt = oauth.get('refreshToken')
+    if not rt:
+        return None
+    body = json.dumps({'grant_type': 'refresh_token',
+                       'refresh_token': rt, 'client_id': CLIENT_ID})
+    r = subprocess.run(['curl', '-sS', '--max-time', '10', '-X', 'POST', TOKEN_URL,
+                        '-H', 'Content-Type: application/json', '-d', '@-'],
+                       input=body, capture_output=True, text=True)
+    if r.returncode != 0:
         return None
     try:
-        return json.loads(r.stdout.strip()).get('claudeAiOauth')
+        d = json.loads(r.stdout)
     except Exception:
-        return {}
+        return None
+    at = d.get('access_token')
+    if not at:
+        return None
+    oauth['accessToken'] = at
+    if d.get('refresh_token'):
+        oauth['refreshToken'] = d['refresh_token']
+    if isinstance(d.get('expires_in'), (int, float)):
+        oauth['expiresAt'] = int((time.time() + d['expires_in']) * 1000)
+    blob['claudeAiOauth'] = oauth
+    # the rotation already happened server side, so a failed write-back means the
+    # stored refresh token is now dead: say so loudly rather than fail silently
+    if not keychain_write(svc, acct, blob) or \
+       ((keychain_read(svc)[0] or {}).get('claudeAiOauth') or {}).get('accessToken') != at:
+        warnings.append(svc + ': token refreshed but could not be written back to the '
+                        'Keychain, this profile needs /login')
+    return at
 
 def cfg_path(profile, d):
     return home + '/.claude.json' if profile == 'default' else os.path.join(d, '.claude.json')
 
-def fetch_usage(profile, d, token):
-    # same endpoint + headers the claude binary uses for /usage; on failure
-    # (rate limit, offline, expired token) fall back to the snapshot claude
-    # itself keeps in the profile's .claude.json (cachedUsageUtilization)
-    r = subprocess.run(['curl', '-fsSL', '--max-time', '6',
-                        'https://api.anthropic.com/api/oauth/usage',
+def usage_call(token):
+    # returns (parsed body or None, http status or 0 for a transport failure)
+    r = subprocess.run(['curl', '-sS', '--max-time', '6', '-w', '\n%{http_code}', USAGE_URL,
                         '-H', 'Authorization: Bearer ' + token,
                         '-H', 'anthropic-beta: oauth-2025-04-20',
                         '-H', 'Content-Type: application/json'],
                        capture_output=True, text=True)
-    if r.returncode == 0:
-        try:
-            return json.loads(r.stdout)
-        except Exception:
-            pass
+    if r.returncode != 0:
+        return None, 0
+    body, _, code = r.stdout.rpartition('\n')
     try:
-        cached = json.load(open(cfg_path(profile, d))).get('cachedUsageUtilization') or {}
-        return cached.get('utilization')
+        code = int(code.strip())
     except Exception:
-        return None
+        return None, 0
+    if code != 200:
+        return None, code
+    try:
+        return json.loads(body), 200
+    except Exception:
+        return None, code
+
+def fetch_usage(row):
+    # live first. an access token lives ~8h and only the claude binary renews it,
+    # and only for the profile you actually launch, so profiles you have not run
+    # today arrive here expired: refresh them ourselves. the cached snapshot in
+    # .claude.json is a last resort and is flagged stale when used.
+    oauth = (row['_blob'] or {}).get('claudeAiOauth') or {}
+    token = oauth.get('accessToken')
+    u = None
+    if token:
+        exp = oauth.get('expiresAt')
+        expired = not isinstance(exp, (int, float)) or exp / 1000 <= time.time() + 60
+        if expired:
+            token = refresh_access_token(row['_svc'], row['_acct'], row['_blob']) or token
+        u, code = usage_call(token)
+        # token revoked or rotated behind our back: one refresh, one retry
+        if u is None and code in (401, 403) and not expired:
+            t2 = refresh_access_token(row['_svc'], row['_acct'], row['_blob'])
+            if t2:
+                u, code = usage_call(t2)
+    if u is not None:
+        return {'u': u, 'stale': False, 'fetchedAtMs': int(time.time() * 1000)}
+    try:
+        cached = json.load(open(cfg_path(row['profile'], row['dir']))).get('cachedUsageUtilization') or {}
+    except Exception:
+        cached = {}
+    if cached.get('utilization'):
+        return {'u': cached['utilization'], 'stale': True, 'fetchedAtMs': cached.get('fetchedAtMs')}
+    return None
 
 def limit(u, key):
     if not u or not u.get(key):
@@ -232,16 +323,17 @@ def entry(profile, d, svc):
         email = (cfg.get('oauthAccount') or {}).get('emailAddress')
     except Exception:
         pass
-    cred = keychain_cred(svc)
-    logged_in = bool(cred and cred.get('accessToken'))
+    blob, acct = keychain_read(svc)
+    cred = (blob or {}).get('claudeAiOauth') or {}
+    logged_in = bool(cred.get('accessToken'))
     login_days = None
-    rexp = (cred or {}).get('refreshTokenExpiresAt')
+    rexp = cred.get('refreshTokenExpiresAt')
     if isinstance(rexp, (int, float)):
         login_days = (rexp / 1000 - now.timestamp()) / 86400
     return {'profile': profile, 'dir': d, 'keychainItem': svc, 'account': email,
             'loggedIn': logged_in,
             'loginExpiresInDays': None if login_days is None else round(login_days, 1),
-            '_token': cred.get('accessToken') if logged_in else None}
+            '_blob': blob, '_acct': acct, '_svc': svc}
 
 rows = [entry('default', home + '/.claude', 'Claude Code-credentials')]
 for d in sorted(glob.glob(home + '/.claude-*')):
@@ -254,10 +346,14 @@ for d in sorted(glob.glob(home + '/.claude-*')):
     rows.append(entry(name, d, f'Claude Code-credentials-{h}'))
 
 with ThreadPoolExecutor(max_workers=8) as ex:
-    usages = list(ex.map(lambda r: fetch_usage(r['profile'], r['dir'], r['_token']) if r['_token'] else None, rows))
+    usages = list(ex.map(lambda r: fetch_usage(r) if r['loggedIn'] else None, rows))
 
-for r, u in zip(rows, usages):
-    del r['_token']
+for r, res in zip(rows, usages):
+    for k in [k for k in r if k.startswith('_')]:
+        del r[k]
+    u = (res or {}).get('u')
+    r['stale'] = bool(res and res['stale'])
+    r['usageFetchedAtMs'] = (res or {}).get('fetchedAtMs')
     scoped = []
     for l in (u or {}).get('limits') or []:
         name = (((l.get('scope') or {}).get('model') or {}).get('display_name'))
@@ -420,5 +516,8 @@ for row in table:
     print(rule('├', '┼', '┤'))
     print(render(row))
 print(rule('└', '┴', '┘'))
+
+for msg in warnings:
+    print('  ' + c(RED, '✗ ' + msg), file=sys.stderr)
 EOF
 }

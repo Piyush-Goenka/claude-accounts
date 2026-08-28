@@ -36,6 +36,13 @@ days until the login (refresh token) expires. Add `--json` for machine-readable
 output. Dirs like `~/.claude-science` (the Claude research beta) that are not
 account profiles are excluded automatically.
 
+The numbers are live for every account, not only the one you last used. An
+access token lives about 8 hours and Claude Code only renews the one belonging
+to the profile it launches, so `claude-accounts` renews expired tokens itself
+and writes the rotated credential back to that profile's Keychain item. If a
+refresh or the usage call fails, it falls back to the last snapshot Claude Code
+recorded in that profile's `.claude.json`.
+
 **Logins expire when stale.** Anthropic's refresh tokens have their own expiry
 (30 days by default). Using an account regularly usually renews it, but once a
 profile shows only a few days left (Claude Code itself warns at 3 days or less),
