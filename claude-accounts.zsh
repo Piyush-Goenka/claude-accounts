@@ -21,7 +21,7 @@
 #  They only replace this one file (previous version kept as .bak).
 # ══════════════════════════════════════════════════════════════════
 
-CLAUDE_ACCOUNTS_VERSION="1.2.0"
+CLAUDE_ACCOUNTS_VERSION="2.0.2"
 
 # ── configuration ──────────────────────────────────────────────────
 _CA_REPO="Piyush-Goenka/claude-accounts"
@@ -193,6 +193,10 @@ warnings = []
 
 # the OAuth client id and token endpoint the claude binary itself uses
 CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
+# the token endpoint answers a request carrying curl's default User-Agent with a
+# blanket 429 rate_limit_error, before it ever looks at the grant. a CLI-shaped
+# User-Agent gets the request evaluated normally.
+USER_AGENT = 'claude-cli/2.1.241 (external, cli)'
 TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
 USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 
@@ -221,7 +225,7 @@ def keychain_write(svc, acct, blob):
                        capture_output=True, text=True)
     return r.returncode == 0
 
-def refresh_access_token(svc, acct, blob):
+def refresh_access_token(profile, svc, acct, blob):
     # trade the refresh token for a fresh access token. the server rotates the
     # refresh token, so the new pair MUST be written back or the profile is
     # logged out; the old credential is left untouched on any failure.
@@ -231,17 +235,26 @@ def refresh_access_token(svc, acct, blob):
         return None
     body = json.dumps({'grant_type': 'refresh_token',
                        'refresh_token': rt, 'client_id': CLIENT_ID})
-    r = subprocess.run(['curl', '-sS', '--max-time', '10', '-X', 'POST', TOKEN_URL,
-                        '-H', 'Content-Type: application/json', '-d', '@-'],
+    r = subprocess.run(['curl', '-sS', '--max-time', '10', '-w', '\n%{http_code}',
+                        '-X', 'POST', TOKEN_URL,
+                        '-H', 'Content-Type: application/json',
+                        '-A', USER_AGENT, '-d', '@-'],
                        input=body, capture_output=True, text=True)
     if r.returncode != 0:
+        warnings.append(f'{profile}: could not reach the token endpoint, showing cached usage')
         return None
+    payload, _, status = r.stdout.rpartition('\n')
     try:
-        d = json.loads(r.stdout)
+        d = json.loads(payload)
     except Exception:
+        warnings.append(f'{profile}: token endpoint returned HTTP {status.strip()}, showing cached usage')
         return None
     at = d.get('access_token')
     if not at:
+        err = d.get('error')
+        err = err.get('type') if isinstance(err, dict) else err
+        warnings.append(f'{profile}: token refresh failed (HTTP {status.strip()}'
+                        + (f', {err}' if err else '') + '), showing cached usage')
         return None
     oauth['accessToken'] = at
     if d.get('refresh_token'):
@@ -253,8 +266,8 @@ def refresh_access_token(svc, acct, blob):
     # stored refresh token is now dead: say so loudly rather than fail silently
     if not keychain_write(svc, acct, blob) or \
        ((keychain_read(svc)[0] or {}).get('claudeAiOauth') or {}).get('accessToken') != at:
-        warnings.append(svc + ': token refreshed but could not be written back to the '
-                        'Keychain, this profile needs /login')
+        warnings.append(f'{profile}: token refreshed but could not be written back to '
+                        'the Keychain, this profile needs /login')
     return at
 
 def cfg_path(profile, d):
@@ -293,11 +306,11 @@ def fetch_usage(row):
         exp = oauth.get('expiresAt')
         expired = not isinstance(exp, (int, float)) or exp / 1000 <= time.time() + 60
         if expired:
-            token = refresh_access_token(row['_svc'], row['_acct'], row['_blob']) or token
+            token = refresh_access_token(row['profile'], row['_svc'], row['_acct'], row['_blob']) or token
         u, code = usage_call(token)
         # token revoked or rotated behind our back: one refresh, one retry
         if u is None and code in (401, 403) and not expired:
-            t2 = refresh_access_token(row['_svc'], row['_acct'], row['_blob'])
+            t2 = refresh_access_token(row['profile'], row['_svc'], row['_acct'], row['_blob'])
             if t2:
                 u, code = usage_call(t2)
     if u is not None:
@@ -370,6 +383,8 @@ for r, res in zip(rows, usages):
 
 if as_json:
     print(json.dumps(rows, indent=2))
+    for msg in warnings:
+        print('  ✗ ' + msg, file=sys.stderr)
     sys.exit(0)
 
 # ── design 1: gradient bar table ───────────────────────────────

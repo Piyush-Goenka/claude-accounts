@@ -58,3 +58,22 @@ Usage is now live for every account, not just the one you last ran.
   the value back to verify it; a failed write-back warns loudly on stderr, since
   the server-side rotation has already invalidated the old refresh token.
 - `--json` gains `stale` and `usageFetchedAtMs` per account.
+
+## 2.0.2 (2026-08-28)
+
+Fixes the token refresh, which never actually worked against the real endpoint.
+
+- The refresh request carried curl's default User-Agent, and the token endpoint
+  answers those with a blanket `429 rate_limit_error` before it ever evaluates
+  the grant. Every refresh failed, so `abhi` and `dhruv` silently fell back to
+  their cached snapshot the moment their tokens expired: the exact bug 2.0.1 was
+  meant to fix. Verified A/B/A against the live endpoint with an invalid grant:
+  claude-cli User-Agent gives `400 invalid_grant`, curl's default gives `429`.
+  The request now sends a CLI-shaped User-Agent.
+- A failed refresh is no longer silent. It prints one stderr line per affected
+  profile naming the HTTP status, e.g.
+  `abhi: token refresh failed (HTTP 429, rate_limit_error), showing cached usage`.
+  The table itself is unchanged. Warnings now also print in `--json` mode.
+- The version constant said `1.2.0` while the released tag was `v2.0.1`, which
+  would have made the daily auto-update re-download the same release forever
+  once the release asset is reachable. Constant now tracks the tag.
