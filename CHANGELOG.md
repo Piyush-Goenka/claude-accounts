@@ -77,3 +77,20 @@ Fixes the token refresh, which never actually worked against the real endpoint.
 - The version constant said `1.2.0` while the released tag was `v2.0.1`, which
   would have made the daily auto-update re-download the same release forever
   once the release asset is reachable. Constant now tracks the tag.
+
+## 2.1.0 (2026-08-30)
+
+- New companion VS Code extension `vscode-claude-switch/`: per-window Claude
+  accounts. Status bar shows the window's account and usage; a picker
+  switches the mapping for that window's folder, shows every account's
+  session/weekly/per-model limits and login state, and can create new
+  profiles entirely from the UI. Implemented via the Claude extension's
+  claudeProcessWrapper hook plus a folder-to-profile map; wrapper is
+  fail-open so the Claude panel can never be broken by it.
+- install.sh now installs both the terminal tool and the VS Code extension in
+  one run; uninstall.sh removes the extension, its generated files, and the
+  wrapper setting (settings.json backed up first). The daily auto-updater
+  refreshes the extension from the same release via the
+  vscode-claude-switch.tar.gz asset.
+- Extension usage fetches now share one disk cache across all VS Code windows,
+  and switching accounts reloads the window automatically.

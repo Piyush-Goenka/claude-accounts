@@ -18,7 +18,9 @@ claude-rohan    # a third...
 curl -fsSL https://raw.githubusercontent.com/Piyush-Goenka/claude-accounts/main/install.sh | bash
 ```
 
-Then restart your terminal.
+Installs the terminal tool and, when VS Code is present, the claude-switch
+extension (the per-window account switcher) in one go. Then restart your
+terminal and reload any open VS Code windows.
 
 ## Usage
 
@@ -54,11 +56,38 @@ your main account. When the login page opens, pick **"use a different account"**
 or copy the URL into an **incognito window**, then sign in with the second
 account's credentials.
 
+## VS Code: per-window accounts (claude-switch)
+
+The repo also ships a small companion VS Code extension in
+`vscode-claude-switch/`. It puts a **Claude: <account>** item in the status
+bar of every window: it shows which account that window's project uses plus
+its live usage, hovering shows all accounts, and clicking opens a picker to
+switch **just that window** (or add a brand-new account, then /login inside
+the Claude panel). No terminal involved at any point.
+
+It is installed automatically by the install one-liner above (and kept up to
+date with the tool). Working from a checkout, `./install.sh` refreshes it; for
+development you can symlink `vscode-claude-switch/` into
+`~/.vscode/extensions/` instead so edits apply on every window reload.
+
+How it works: on first activation it registers a tiny wrapper via the Claude
+extension's `claudeCode.claudeProcessWrapper` setting. Every Claude panel
+spawn runs through the wrapper, which maps the window's project folder to a
+profile (`map.json`) and exports `CLAUDE_CONFIG_DIR` before exec'ing the real
+binary. Different windows, different accounts, simultaneously. Full design in
+[plan.md](plan.md). `Claude Switch: Uninstall` from the command palette
+removes the wrapper and mapping cleanly.
+
 ## Updates
 
 You never have to think about updates. Every command checks for a newer release
 (at most once per day, 3-second network cap, offline never blocks) and updates
 itself **before** running. Manual check: `claude-accounts-update`.
+
+The VS Code extension updates ride along: when a newer release is installed,
+the extension files are refreshed from the same release (asset
+`vscode-claude-switch.tar.gz`), and each VS Code window picks the new code up
+on its next reload.
 
 ## Uninstall
 

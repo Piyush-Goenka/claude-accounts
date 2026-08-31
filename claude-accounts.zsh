@@ -66,6 +66,26 @@ _ca_ver_gt() {
 
 # Download latest release, verify it, swap it in, re-source.
 # Writes ONLY to $_CA_FILE (+ .bak). Never touches profiles or Keychain.
+# Update the VS Code companion extension from the same release, when both
+# VS Code and the extension are installed. Fail-soft: any problem leaves the
+# current extension in place and never blocks the CLI update.
+_ca_update_vscode_ext() {
+  local extdir="$HOME/.vscode/extensions/claude-accounts.claude-switch"
+  [[ -d "$extdir" ]] || return 0
+  local tmp
+  tmp="$(mktemp -d)" || return 0
+  if curl -fsSL --max-time 15 \
+      "https://github.com/$_CA_REPO/releases/latest/download/vscode-claude-switch.tar.gz" \
+      -o "$tmp/ext.tgz" 2>/dev/null \
+     && tar -xzf "$tmp/ext.tgz" -C "$tmp" 2>/dev/null \
+     && [[ -f "$tmp/vscode-claude-switch/package.json" ]]; then
+    rm -rf "$extdir" && mv "$tmp/vscode-claude-switch" "$extdir" \
+      && echo "claude-accounts: vs code extension updated (reload VS Code windows to apply)"
+  fi
+  rm -rf "$tmp"
+  return 0
+}
+
 _ca_install_latest() {
   local tmp
   tmp="$(mktemp)" || return 1
@@ -79,6 +99,7 @@ _ca_install_latest() {
   fi
   [[ -f "$_CA_FILE" ]] && cp "$_CA_FILE" "$_CA_FILE.bak"
   mv "$tmp" "$_CA_FILE"
+  _ca_update_vscode_ext
   source "$_CA_FILE"
   return 0
 }

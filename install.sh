@@ -45,6 +45,31 @@ else
   ok "shell configured"
 fi
 
+# VS Code companion extension (per-window account switcher), when VS Code exists
+EXT_ROOT="$HOME/.vscode/extensions"
+if [[ -d "$EXT_ROOT" ]]; then
+  TARGET="$EXT_ROOT/claude-accounts.claude-switch"
+  rm -rf "$EXT_ROOT"/claude-accounts.claude-switch*
+  if [[ -n "$SCRIPT_DIR" && -d "$SCRIPT_DIR/vscode-claude-switch" ]]; then
+    mkdir -p "$TARGET"
+    cp "$SCRIPT_DIR/vscode-claude-switch/"* "$TARGET/"
+    ok "vs code extension" "claude-switch (reload VS Code windows)"
+  else
+    TMPD="$(mktemp -d)"
+    if curl -fsSL "https://github.com/$REPO/releases/latest/download/vscode-claude-switch.tar.gz" -o "$TMPD/ext.tgz" 2>/dev/null \
+       && tar -xzf "$TMPD/ext.tgz" -C "$TMPD" 2>/dev/null \
+       && [[ -f "$TMPD/vscode-claude-switch/package.json" ]]; then
+      mv "$TMPD/vscode-claude-switch" "$TARGET"
+      ok "vs code extension" "claude-switch (reload VS Code windows)"
+    else
+      skip "vs code extension" "not in this release yet"
+    fi
+    rm -rf "$TMPD"
+  fi
+else
+  skip "vs code extension" "VS Code not found"
+fi
+
 nxt "open a new terminal   (or: source ~/.zshrc)"
 dim "      claude-create <name>  →  claude-<name>  →  /login"
 echo ""

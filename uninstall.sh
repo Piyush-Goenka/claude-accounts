@@ -41,5 +41,31 @@ else
   skip "shell" "already clean"
 fi
 
+# VS Code companion extension: clear the wrapper setting FIRST (so the Claude
+# panel never points at a deleted file), then remove extension + generated files
+VSSET="$HOME/Library/Application Support/Code/User/settings.json"
+GSDIR="$HOME/Library/Application Support/Code/User/globalStorage/claude-accounts.claude-switch"
+if compgen -G "$HOME/.vscode/extensions/claude-accounts.claude-switch*" > /dev/null 2>&1; then
+  if [[ -f "$VSSET" ]] && python3 - "$VSSET" << 'PY' 2>/dev/null
+import json, shutil, sys
+p = sys.argv[1]
+d = json.load(open(p))
+v = str(d.get('claudeCode.claudeProcessWrapper') or '')
+if 'claude-accounts.claude-switch' in v:
+    shutil.copy(p, p + '.bak')
+    del d['claudeCode.claudeProcessWrapper']
+    open(p, 'w').write(json.dumps(d, indent=2) + '\n')
+PY
+  then
+    :
+  else
+    skip "vs code setting" "remove claudeCode.claudeProcessWrapper from settings manually"
+  fi
+  rm -rf "$HOME/.vscode/extensions/"claude-accounts.claude-switch* "$GSDIR"
+  ok "vs code extension removed"
+else
+  skip "vs code extension" "not installed"
+fi
+
 nxt "open a new terminal"
 echo ""

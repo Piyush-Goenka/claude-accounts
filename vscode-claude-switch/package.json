@@ -1,0 +1,34 @@
+{
+  "name": "claude-switch",
+  "displayName": "Claude Switch",
+  "description": "Per-window Claude Code accounts: a status bar switcher showing every account's usage and login state.",
+  "publisher": "claude-accounts",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeSwitch.pick",
+        "title": "Claude Switch: Choose Account for This Window"
+      },
+      {
+        "command": "claudeSwitch.refresh",
+        "title": "Claude Switch: Refresh Accounts"
+      },
+      {
+        "command": "claudeSwitch.uninstall",
+        "title": "Claude Switch: Uninstall (remove wrapper and mapping)"
+      }
+    ]
+  }
+}
