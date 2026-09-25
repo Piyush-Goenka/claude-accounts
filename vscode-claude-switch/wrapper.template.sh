@@ -27,7 +27,9 @@ PY
   )
 fi
 
-if [[ -n "$profile" && -d "$HOME/.claude-$profile" ]]; then
+# "default" is an explicit mapping meaning the default account (~/.claude);
+# it exists so a subfolder can override a parent folder's mapping.
+if [[ -n "$profile" && "$profile" != default && -d "$HOME/.claude-$profile" ]]; then
   export CLAUDE_CONFIG_DIR="$HOME/.claude-$profile"
 fi
 

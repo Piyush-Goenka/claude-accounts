@@ -94,3 +94,16 @@ Fixes the token refresh, which never actually worked against the real endpoint.
   vscode-claude-switch.tar.gz asset.
 - Extension usage fetches now share one disk cache across all VS Code windows,
   and switching accounts reloads the window automatically.
+
+## 2.1.1 (2026-09-09)
+
+- The version constant still said `2.0.2` in the `v2.1.0` release, so the daily
+  auto-updater saw a newer tag every day, re-downloaded the identical script,
+  reinstalled the VS Code extension, and printed the update banner again.
+  Constant now tracks the tag (same class of bug as 2.0.2).
+- VS Code extension: choosing `default` for a folder whose parent folder is
+  mapped to another profile no longer silently keeps the parent's account.
+  Previously "default" only deleted the folder's entry, so longest-match fell
+  back to the parent. The picker now writes an explicit `"default"` entry when
+  a parent mapping would otherwise apply; the wrapper treats that value as
+  "no CLAUDE_CONFIG_DIR". Extension version 0.1.1.

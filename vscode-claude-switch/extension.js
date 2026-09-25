@@ -171,12 +171,12 @@ function currentFolder() {
   return ws && ws.length ? ws[0].uri.fsPath : null;
 }
 
-function mappedProfile(folder) {
+function mappedProfileIn(m, folder) {
   if (!folder) return null;
   const cwd = canonical(folder);
   let best = '';
   let name = null;
-  for (const [k, v] of Object.entries(readMap())) {
+  for (const [k, v] of Object.entries(m)) {
     const key = canonical(String(k));
     if ((cwd === key || cwd.startsWith(key + path.sep)) && key.length > best.length) {
       best = key; name = String(v);
@@ -184,6 +184,8 @@ function mappedProfile(folder) {
   }
   return name;
 }
+
+function mappedProfile(folder) { return mappedProfileIn(readMap(), folder); }
 
 // ── status bar ─────────────────────────────────────────────────────
 
@@ -256,7 +258,7 @@ async function pickAccount() {
     profile: i.name,
   }));
   items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
-  items.push({ label: '$(discard) Use default account', description: 'remove the mapping for this folder', action: 'unmap' });
+  items.push({ label: '$(discard) Use default account', description: 'default account for this folder, even if a parent folder is mapped', action: 'unmap' });
   items.push({ label: '$(add) Add a new account…', description: 'create a profile, then /login in the Claude panel', action: 'add' });
   const picked = await vscode.window.showQuickPick(items, {
     title: `Claude account for ${path.basename(folder)}`,
@@ -266,14 +268,20 @@ async function pickAccount() {
   if (picked.action === 'add') return addAccount(folder);
   const m = readMap();
   const key = canonical(folder);
-  if (picked.action === 'unmap' || picked.profile === 'default') {
+  const chosen = picked.action === 'unmap' ? 'default' : picked.profile;
+  if (chosen === 'default') {
+    // Deleting this folder's entry only makes it inherit whatever a parent
+    // folder is mapped to. When a parent would win, keep an explicit
+    // "default" entry so longest-match picks it; the wrapper treats
+    // "default" as "no CLAUDE_CONFIG_DIR", i.e. the default account.
     delete m[key];
+    const inherited = mappedProfileIn(m, folder);
+    if (inherited && inherited !== 'default') m[key] = 'default';
   } else {
-    m[key] = picked.profile;
+    m[key] = chosen;
   }
   writeMap(m);
   await updateStatus();
-  const chosen = picked.profile || 'default';
   if (chosen !== active) {
     // reload immediately so the Claude panel comes back as the new account
     vscode.commands.executeCommand('workbench.action.reloadWindow');
