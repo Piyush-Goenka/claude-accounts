@@ -10,6 +10,7 @@
 #    claude-delete <name>      remove profile + its Keychain credential
 #    claude-accounts           table of all profiles: account, live usage
 #                              (session + weekly %), login expiry; --json for JSON
+#    claude-help               list all commands and profile aliases
 #    claude-accounts-update    update this tool to the latest release
 #
 #  Usage numbers are live for every profile, not just the one you last
@@ -196,6 +197,24 @@ claude-delete() {
   _ca_ok "profile"      "$name removed"
   unalias "claude-$name" 2>/dev/null
   _ca_ok "alias"        "claude-$name removed"
+}
+
+claude-help() {
+  printf '\n  %s %s\n\n' "$(_ca_c '1;38;5;173' 'claude-accounts')" "$(_ca_c 2 "v$CLAUDE_ACCOUNTS_VERSION")"
+  printf '  %-30s %s\n' \
+    'claude-create <name>'        "$(_ca_c 2 'create a profile, then: claude-<name> → /login')" \
+    'claude-delete <name>'        "$(_ca_c 2 'remove a profile + its Keychain credential')" \
+    'claude-accounts [--json]'    "$(_ca_c 2 'all profiles: account, live usage, login expiry')" \
+    'claude-help'                 "$(_ca_c 2 'this list')" \
+    'claude-accounts-update'      "$(_ca_c 2 'update this tool to the latest release')"
+  printf '\n  %-30s %s\n' 'claude' "$(_ca_c 2 'the default account (~/.claude)')"
+  local d n
+  for d in "$HOME"/.claude-*(N/); do
+    n="${${d:t}#.claude-}"
+    (( ${_CA_EXCLUDE[(Ie)$n]} )) && continue
+    printf '  %-30s %s\n' "claude-$n" "$(_ca_c 2 "the $n account")"
+  done
+  printf '\n'
 }
 
 claude-accounts() {

@@ -107,3 +107,8 @@ Fixes the token refresh, which never actually worked against the real endpoint.
   back to the parent. The picker now writes an explicit `"default"` entry when
   a parent mapping would otherwise apply; the wrapper treats that value as
   "no CLAUDE_CONFIG_DIR". Extension version 0.1.1.
+
+## Unreleased
+
+- `claude-help`: lists every command plus the dynamic `claude-<name>` aliases
+  present on this machine.

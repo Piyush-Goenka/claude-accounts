@@ -29,6 +29,7 @@ claude-create mohan     # create profile → prints next steps
 claude-mohan            # launch it → run /login once
 claude-accounts         # colorful table of all accounts: live usage bars + login state
 claude-delete mohan     # remove profile
+claude-help             # list every command + the profile aliases on this Mac
 ```
 
 `claude-accounts` shows, per account, the session (5-hour) and weekly usage in
