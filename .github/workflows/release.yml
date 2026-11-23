@@ -1,0 +1,116 @@
+name: release
+
+# Cut a release by pushing a tag:  git tag v2.1.1 && git push origin v2.1.1
+#
+# The version guard below is the reason this workflow exists. Every installed
+# copy compares the published tag against the CLAUDE_ACCOUNTS_VERSION constant
+# inside the file it already has. If a release ships an asset whose constant is
+# lower than its own tag, every machine re-downloads that identical file once a
+# day, forever, and the constant never catches up. That shipped twice (v2.0.2
+# and v2.1.0), so it is checked here instead of remembered.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+
+      - name: Verify the version constant matches the tag
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          FILE_VERSION="$(sed -n 's/^CLAUDE_ACCOUNTS_VERSION="\(.*\)"/\1/p' claude-accounts.zsh | head -1)"
+
+          echo "tag      : $GITHUB_REF_NAME  ->  $TAG_VERSION"
+          echo "constant : ${FILE_VERSION:-<unreadable>}"
+
+          if [ -z "$FILE_VERSION" ]; then
+            echo "::error file=claude-accounts.zsh::could not read CLAUDE_ACCOUNTS_VERSION"
+            exit 1
+          fi
+
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "::error file=claude-accounts.zsh::CLAUDE_ACCOUNTS_VERSION is \"$FILE_VERSION\" but this tag is \"$TAG_VERSION\""
+            echo ""
+            echo "Installed copies run: _ca_ver_gt <published tag> <constant in their file>"
+            echo "Publishing this asset would make that comparison true forever, so every"
+            echo "machine would re-download the same bytes daily and never converge."
+            echo ""
+            echo "Fix: set CLAUDE_ACCOUNTS_VERSION=\"$TAG_VERSION\" in claude-accounts.zsh,"
+            echo "commit, delete this tag, and re-tag."
+            exit 1
+          fi
+
+          echo "VERSION=$TAG_VERSION" >> "$GITHUB_ENV"
+          echo "ok: constant matches the tag"
+
+      - name: Syntax-check the shipped scripts
+        run: |
+          set -euo pipefail
+          zsh  -n claude-accounts.zsh
+          bash -n install.sh
+          bash -n uninstall.sh
+          echo "ok: all three parse"
+
+      - name: Build the VS Code extension tarball
+        run: |
+          set -euo pipefail
+          tar -czf vscode-claude-switch.tar.gz vscode-claude-switch
+
+          # Mirror exactly what install.sh and _ca_update_vscode_ext check after
+          # extracting. If this path is wrong the clients silently skip the
+          # extension instead of failing, so catch it here.
+          tmp="$(mktemp -d)"
+          tar -xzf vscode-claude-switch.tar.gz -C "$tmp"
+          if [ ! -f "$tmp/vscode-claude-switch/package.json" ]; then
+            echo "::error::tarball is missing vscode-claude-switch/package.json"
+            exit 1
+          fi
+          echo "ok: tarball contains vscode-claude-switch/package.json"
+          echo "extension version: $(sed -n 's/.*"version": "\(.*\)".*/\1/p' "$tmp/vscode-claude-switch/package.json" | head -1)"
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          # Escape dots so 2.1.1 cannot match 2x1y1
+          VESC="$(printf '%s' "$VERSION" | sed 's/\./\\./g')"
+          NOTES="$(awk -v v="$VESC" '
+            $0 ~ "^## " v "([^0-9]|$)" { f = 1; next }
+            f && /^## / { exit }
+            f { print }
+          ' CHANGELOG.md)"
+
+          if [ -z "$(printf '%s' "$NOTES" | tr -d '[:space:]')" ]; then
+            echo "no CHANGELOG section for $VERSION, falling back to generated notes"
+            echo "GENERATE_NOTES=true" >> "$GITHUB_ENV"
+            NOTES=""
+          else
+            echo "GENERATE_NOTES=false" >> "$GITHUB_ENV"
+          fi
+
+          {
+            echo 'NOTES<<__RELEASE_NOTES_EOF__'
+            printf '%s\n' "$NOTES"
+            echo '__RELEASE_NOTES_EOF__'
+          } >> "$GITHUB_ENV"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: v${{ env.VERSION }}
+          body: ${{ env.NOTES }}
+          generate_release_notes: ${{ env.GENERATE_NOTES }}
+          files: |
+            claude-accounts.zsh
+            vscode-claude-switch.tar.gz
