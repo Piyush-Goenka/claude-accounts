@@ -91,8 +91,11 @@ re-entry guards removed:
 
 **Removing `--json`.** Delete `as_json` (line 230) and the branch at lines
 424-428. Warnings already print again in table mode at line 575, so they keep
-reaching the user. The row fields `stale`, `usageFetchedAtMs`, `keychainItem`
-and `dir` were read only by the JSON branch and become dead once it goes.
+reaching the user. The row fields `stale`, `usageFetchedAtMs` and
+`keychainItem` were read only by the JSON branch and become dead once it goes.
+`dir` is not dead: `fetch_usage` reads `row['dir']` to find the profile's
+`.claude.json` for the cached-usage fallback, inside a try/except, so removing
+it would switch that fallback off without any error.
 The cached-usage fallback logic itself stays; only the reporting of it goes.
 
 **Deprecation shims, for one release.** `claude-create`, `claude-delete`,
@@ -126,5 +129,6 @@ the per-profile `claude-<name>` aliases found on the machine.
   the current functions do via `${1#claude-}`. Keeping it is the default,
   since it costs nothing and matches existing behaviour.
 - Ordering of the entries in the rewritten help output.
-- Whether to strip the now-dead row fields or leave them computed. Stripping
-  is tidier; leaving them costs nothing at runtime.
+- Whether to strip the three dead row fields (`stale`, `usageFetchedAtMs`,
+  `keychainItem`) or leave them computed. Stripping is tidier; leaving them
+  costs nothing at runtime. `dir` must stay.
