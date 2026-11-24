@@ -108,7 +108,7 @@ Fixes the token refresh, which never actually worked against the real endpoint.
   a parent mapping would otherwise apply; the wrapper treats that value as
   "no CLAUDE_CONFIG_DIR". Extension version 0.1.1.
 
-## 2.2.0 (unreleased)
+## 2.2.0 (2026-11-24)
 
 - One entry point for every command: `claude-accounts` (the table),
   `claude-accounts create <name>`, `claude-accounts delete <name>`,
