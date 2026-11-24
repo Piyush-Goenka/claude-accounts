@@ -31,6 +31,13 @@ fi
 # it exists so a subfolder can override a parent folder's mapping.
 if [[ -n "$profile" && "$profile" != default && -d "$HOME/.claude-$profile" ]]; then
   export CLAUDE_CONFIG_DIR="$HOME/.claude-$profile"
+  # a setup-token profile (claude-accounts create --token) signs in with its
+  # token; an unreadable token file leaves Claude to its own sign-in
+  if [[ -s "$CLAUDE_CONFIG_DIR/.setup-token" ]]; then
+    { read -r tok < "$CLAUDE_CONFIG_DIR/.setup-token" } 2>/dev/null
+    [[ -n "$tok" ]] && export CLAUDE_CODE_OAUTH_TOKEN="$tok"
+    unset tok
+  fi
 fi
 
 # breadcrumb for validation and support; never fatal

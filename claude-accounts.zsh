@@ -6,12 +6,20 @@
 #  and skills with your main ~/.claude via symlinks.
 #
 #  Commands:
-#    claude-create <name>      create a profile  → then: claude-<name> → /login
-#    claude-delete <name>      remove profile + its Keychain credential
-#    claude-accounts           table of all profiles: account, live usage
-#                              (session + weekly %), login expiry; --json for JSON
-#    claude-help               list all commands and profile aliases
-#    claude-accounts-update    update this tool to the latest release
+#    claude-accounts                table of all profiles: account, live
+#                                   usage (session + weekly %), login expiry
+#    claude-accounts create <name>  create a profile  → then: claude-<name> → /login
+#    claude-accounts create <name> --token
+#                                   create a profile that signs in with a setup
+#                                   token from `claude setup-token` (pasted in)
+#    claude-accounts token <name>   replace a token profile's setup token
+#    claude-accounts delete <name>  remove profile + its Keychain credential
+#    claude-accounts update         update this tool to the latest release
+#    claude-accounts help           list all commands and profile aliases
+#    claude-<name>                  launch that profile (plain claude is the default)
+#
+#  The old names claude-create, claude-delete, claude-help and
+#  claude-accounts-update still work for one release and print a notice.
 #
 #  Usage numbers are live for every profile, not just the one you last
 #  ran: an access token lives ~8h and the claude binary only renews the
@@ -22,7 +30,7 @@
 #  They only replace this one file (previous version kept as .bak).
 # ══════════════════════════════════════════════════════════════════
 
-CLAUDE_ACCOUNTS_VERSION="2.1.1"
+CLAUDE_ACCOUNTS_VERSION="2.2.0"
 
 # ── configuration ──────────────────────────────────────────────────
 _CA_REPO="Piyush-Goenka/claude-accounts"
@@ -36,13 +44,44 @@ _CA_EXCLUDE=(science)
 # macOS only (Keychain + BSD stat); load silently as a no-op elsewhere
 [[ "$OSTYPE" == darwin* ]] || return 0
 
-# ── dynamic aliases: one per existing profile dir, rebuilt each shell ──
+# ── launchers: claude-<name> for every profile dir, rebuilt each shell ──
+
+# A setup-token profile (one with ~/.claude-<name>/.setup-token) gets a
+# function that reads its token at launch; every other profile keeps a plain
+# alias. The other kind is removed first: zsh expands an alias before it looks
+# up a function, so a leftover alias would quietly launch without the token.
+_ca_launcher_define() {
+  local dir="$HOME/.claude-$1"
+  if [[ -e "$dir/.setup-token" ]]; then
+    unalias "claude-$1" 2>/dev/null
+    functions[claude-$1]="_ca_launch_token ${(q)1} \"\$@\""
+  else
+    unfunction "claude-$1" 2>/dev/null
+    alias "claude-$1"="CLAUDE_CONFIG_DIR=$dir claude"
+  fi
+}
+
+# Start claude for a token profile. The token is read at this moment and
+# exported only inside a subshell, so it reaches that one claude and never
+# this shell. eval resolves claude through your own alias or function, the
+# same way the alias launchers of browser-login profiles do.
+_ca_launch_token() {
+  local dir="$HOME/.claude-$1" tok
+  { read -r tok < "$dir/.setup-token" } 2>/dev/null
+  if [[ -z "$tok" ]]; then
+    _ca_err "no token" "claude-$1 has no setup token; run: claude-accounts token $1"
+    return 1
+  fi
+  shift
+  ( export CLAUDE_CONFIG_DIR="$dir" CLAUDE_CODE_OAUTH_TOKEN="$tok"; eval 'claude "$@"' )
+}
+
 () {
   local d n
   for d in "$HOME"/.claude-*(N/); do
     n="${${d:t}#.claude-}"
     (( ${_CA_EXCLUDE[(Ie)$n]} )) && continue
-    alias "claude-$n"="CLAUDE_CONFIG_DIR=$d claude"
+    _ca_launcher_define "$n"
   done
 }
 
@@ -123,7 +162,7 @@ _ca_ensure_latest() {
   _ca_install_latest
 }
 
-claude-accounts-update() {
+_ca_cmd_update() {
   local latest
   latest="$(_ca_latest_tag)"
   if [[ -z "$latest" ]]; then
@@ -148,25 +187,115 @@ _ca_next() { printf '\n  %s  %s\n' "$(_ca_c '1;38;5;173' 'next')" "$(_ca_c '1' "
 
 # ── commands ───────────────────────────────────────────────────────
 
-claude-create() {
-  if [[ -z "$_CA_REENTRY" ]] && _ca_ensure_latest; then
-    _CA_REENTRY=1 claude-create "$@"; return $?
+# A profile folder: its own login, everything else shared with ~/.claude.
+_ca_profile_dir() {
+  local dir="$HOME/.claude-$1" f
+  mkdir -p "$dir"
+  for f in projects history.jsonl settings.json CLAUDE.md skills plugins; do
+    ln -sfn "$HOME/.claude/$f" "$dir/$f"
+  done
+}
+
+# Read a setup token from the terminal into the caller's tok, showing one *
+# per character; Backspace removes the last one. Echo stays off for the whole
+# read, not just inside each single-character read, so a fast paste never
+# flashes on screen, and the terminal is restored even on Ctrl-C. Anything
+# still arriving right after a line break is the rest of a token that wrapped
+# when it was copied: taken now, it cannot land in the label or at the shell
+# prompt (which would run it and keep it in history). Spaces and control
+# characters are never part of a token and are dropped.
+_ca_read_masked() {
+  local c more saved
+  saved=$(stty -g)
+  tok=''
+  {
+    stty -echo -icanon min 1
+    while read -rs -k1 -u0 c; do
+      if [[ $c == $'\n' || $c == $'\r' ]]; then
+        more=''
+        while read -rs -t 0.2 -k1 -u0 c; do
+          [[ $c == $'\n' || $c == $'\r' ]] || { more=1; break; }
+        done
+        [[ -n $more ]] || break
+      fi
+      if [[ $c == $'\x7f' || $c == $'\b' ]]; then
+        [[ -n $tok ]] && { tok=${tok[1,-2]}; print -n -u2 -- $'\b \b'; }
+      elif [[ $c != [[:space:][:cntrl:]] ]]; then
+        tok+=$c; print -n -u2 -- '*'
+      fi
+    done
+  } always {
+    stty "$saved"
+  }
+  print -u2
+}
+
+# Ask for a setup token, then health-check it against the name's account. On
+# success the caller's locals hold it: tok (the token) and checked ("session S%
+# · week W%"). Nothing is written unless the token is accepted.
+_ca_ask_token() {
+  if [[ -t 0 ]]; then
+    print -n -u2 -- '  token: '
+    _ca_read_masked
+  else
+    read -r tok          # piped in: one line, nothing to show
   fi
-  local name="${1#claude-}"
+  if [[ -z "$tok" ]]; then _ca_err "no token" "nothing was pasted"; return 1; fi
+  local out rc; local -a f
+  out=$(CA_PING_TOKEN="$tok" _ca_py ping "$1"); rc=$?
+  f=(${=out})
+  case $rc in
+    0) checked="session ${f[2]}% · week ${f[3]}%" ;;
+    2) _ca_err "token rejected" "HTTP ${f[1]}; check that the whole token was pasted"; return 1 ;;
+    *) if [[ "${f[1]}" == 0 ]]; then _ca_err "health check failed" "no answer from api.anthropic.com"
+       else _ca_err "health check failed" "HTTP ${f[1]}"; fi
+       return 1 ;;
+  esac
+}
+
+_ca_cmd_create() {
+  local arg name="" token_mode=""
+  for arg in "$@"; do
+    case "$arg" in
+      --token) token_mode=1 ;;
+      -*) _ca_err "unknown flag" "$arg   (see: claude-accounts help)"; return 1 ;;
+      *)  if [[ -n "$name" ]]; then _ca_err "usage" "claude-accounts create <name> [--token]"; return 1; fi
+          name="${arg#claude-}" ;;
+    esac
+  done
   if [[ -z "$name" || "$name" == *[^a-zA-Z0-9_-]* ]]; then
-    _ca_err "usage" "claude-create <name>   (letters, numbers, - and _ only)"; return 1
+    _ca_err "usage" "claude-accounts create <name> [--token]   (letters, numbers, - and _ only)"; return 1
   fi
   if (( ${_CA_EXCLUDE[(Ie)$name]} )); then
     _ca_err "reserved name" "$name"; return 1
   fi
   local dir="$HOME/.claude-$name"
   if [[ -e "$dir" ]]; then _ca_err "already exists" "$name"; return 1; fi
-  mkdir -p "$dir"
-  local f
-  for f in projects history.jsonl settings.json CLAUDE.md skills plugins; do
-    ln -sfn "$HOME/.claude/$f" "$dir/$f"
-  done
-  alias "claude-$name"="CLAUDE_CONFIG_DIR=$dir claude"
+
+  if [[ -n "$token_mode" ]]; then
+    # nothing is created until the token has passed its health check, so an
+    # abort or a rejected token leaves no folder behind
+    local tok checked label
+    _ca_next "in another terminal run:  claude setup-token"
+    _ca_dim "      sign in as the account you want, then paste the token here"
+    print
+    _ca_ask_token "$name" || return 1
+    read -r "label?  name to show for this account (e.g. its email), Enter to skip: "
+    _ca_profile_dir "$name"
+    if ! CA_PING_TOKEN="$tok" _ca_py save "$name" ${label:+"$label"}; then
+      rm -rf "$dir"; _ca_err "could not save the token" "$name"; return 1
+    fi
+    _ca_launcher_define "$name"
+    print
+    _ca_ok "token accepted"   "$checked"
+    _ca_ok "profile created"  "$name"
+    _ca_ok "synced with main" "projects · history · settings · CLAUDE.md · skills · plugins"
+    _ca_ok "launcher ready"   "claude-$name   (no /login needed)"
+    return 0
+  fi
+
+  _ca_profile_dir "$name"
+  _ca_launcher_define "$name"
   _ca_ok "profile created"  "$name"
   _ca_ok "synced with main"   "projects · history · settings · CLAUDE.md · skills · plugins"
   _ca_ok "alias ready"       "claude-$name"
@@ -174,13 +303,10 @@ claude-create() {
   _ca_dim "      in the browser pick \"use a different account\" or use an incognito window"
 }
 
-claude-delete() {
-  if [[ -z "$_CA_REENTRY" ]] && _ca_ensure_latest; then
-    _CA_REENTRY=1 claude-delete "$@"; return $?
-  fi
+_ca_cmd_delete() {
   local name="${1#claude-}"
   if [[ -z "$name" || "$name" == *[^a-zA-Z0-9_-]* ]]; then
-    _ca_err "usage" "claude-delete <name>"; return 1
+    _ca_err "usage" "claude-accounts delete <name>"; return 1
   fi
   if (( ${_CA_EXCLUDE[(Ie)$name]} )); then
     _ca_err "reserved name" "$name"; return 1
@@ -193,41 +319,109 @@ claude-delete() {
   if security delete-generic-password -s "Claude Code-credentials-$hash" >/dev/null 2>&1; then
     _ca_ok "keychain credential"  "removed"
   fi
-  rm -rf "$dir"          # dir holds only symlinks; shared ~/.claude data is safe
+  rm -rf "$dir"          # symlinks, plus a token profile's own token; shared ~/.claude data is safe
+  rm -f "$HOME/.cache/claude-accounts/ping-$name.json"
   _ca_ok "profile"      "$name removed"
   unalias "claude-$name" 2>/dev/null
-  _ca_ok "alias"        "claude-$name removed"
+  unfunction "claude-$name" 2>/dev/null
+  _ca_ok "launcher"     "claude-$name removed"
 }
 
-claude-help() {
+_ca_cmd_token() {
+  local name="${1#claude-}"
+  if (( $# != 1 )) || [[ -z "$name" || "$name" == -* || "$name" == *[^a-zA-Z0-9_-]* ]]; then
+    _ca_err "usage" "claude-accounts token <name>"; return 1
+  fi
+  local dir="$HOME/.claude-$name"
+  if [[ "$name" == default ]]; then
+    _ca_err "not a token profile" "the default account signs in with the browser"; return 1
+  fi
+  if [[ ! -d "$dir" ]] || (( ${_CA_EXCLUDE[(Ie)$name]} )); then
+    _ca_err "no such profile" "$name"; return 1
+  fi
+  if [[ ! -e "$dir/.setup-token" ]]; then
+    _ca_err "not a token profile" "$name signs in with the browser"
+    _ca_dim "      for a token instead: claude-accounts delete $name, then claude-accounts create $name --token"
+    return 1
+  fi
+  local tok checked
+  _ca_next "in another terminal run:  claude setup-token"
+  _ca_dim "      sign in as the account $name uses, then paste the new token here"
+  print
+  if ! _ca_ask_token "$name"; then _ca_dim "      the old token is unchanged"; return 1; fi
+  if ! CA_PING_TOKEN="$tok" _ca_py save "$name"; then
+    _ca_err "could not save the token" "the old token is unchanged"; return 1
+  fi
+  _ca_ok "token replaced" "$checked"
+}
+
+_ca_cmd_help() {
   printf '\n  %s %s\n\n' "$(_ca_c '1;38;5;173' 'claude-accounts')" "$(_ca_c 2 "v$CLAUDE_ACCOUNTS_VERSION")"
-  printf '  %-30s %s\n' \
-    'claude-create <name>'        "$(_ca_c 2 'create a profile, then: claude-<name> → /login')" \
-    'claude-delete <name>'        "$(_ca_c 2 'remove a profile + its Keychain credential')" \
-    'claude-accounts [--json]'    "$(_ca_c 2 'all profiles: account, live usage, login expiry')" \
-    'claude-help'                 "$(_ca_c 2 'this list')" \
-    'claude-accounts-update'      "$(_ca_c 2 'update this tool to the latest release')"
-  printf '\n  %-30s %s\n' 'claude' "$(_ca_c 2 'the default account (~/.claude)')"
+  printf '  %-38s %s\n' \
+    'claude-accounts'                       "$(_ca_c 2 'all profiles: account, live usage, login expiry')" \
+    'claude-accounts create <name>'         "$(_ca_c 2 'create a profile, then: claude-<name> → /login')" \
+    'claude-accounts create <name> --token' "$(_ca_c 2 'create a profile that signs in with a setup token')" \
+    'claude-accounts token <name>'          "$(_ca_c 2 "replace a token profile's setup token")" \
+    'claude-accounts delete <name>'         "$(_ca_c 2 'remove a profile + its login')" \
+    'claude-accounts update'                "$(_ca_c 2 'update this tool to the latest release')" \
+    'claude-accounts help'                  "$(_ca_c 2 'this list (also --help, -h)')"
+  printf '\n  %-38s %s\n' 'claude' "$(_ca_c 2 'the default account (~/.claude)')"
   local d n
   for d in "$HOME"/.claude-*(N/); do
     n="${${d:t}#.claude-}"
     (( ${_CA_EXCLUDE[(Ie)$n]} )) && continue
-    printf '  %-30s %s\n' "claude-$n" "$(_ca_c 2 "the $n account")"
+    printf '  %-38s %s\n' "claude-$n" "$(_ca_c 2 "the $n account")"
   done
   printf '\n'
 }
 
+# ── old names, kept for one release ───────────────────────────────
+
+_ca_deprecated() {
+  printf '  %s\n' "$(_ca_c 2 "$1 is now: $2   (the old name goes away in the next release)")" >&2
+}
+claude-create()          { _ca_deprecated claude-create 'claude-accounts create'; claude-accounts create "$@" }
+claude-delete()          { _ca_deprecated claude-delete 'claude-accounts delete'; claude-accounts delete "$@" }
+claude-help()            { _ca_deprecated claude-help 'claude-accounts help'; claude-accounts help }
+claude-accounts-update() { _ca_deprecated claude-accounts-update 'claude-accounts update'; claude-accounts update "$@" }
+
+# One entry point for every command. help and update return before the daily
+# update check (update is that check), and unknown input is refused before it,
+# so a typo never triggers a network call. Everything else passes the check
+# exactly once.
 claude-accounts() {
+  local sub="$1"
+  case "$sub" in
+    help|--help|-h) _ca_cmd_help; return ;;
+    update) shift; _ca_cmd_update "$@"; return ;;
+    ''|create|delete|token) ;;
+    -*) _ca_err "unknown flag" "$sub   (see: claude-accounts help)"; return 1 ;;
+    *)  _ca_err "unknown command" "$sub   (see: claude-accounts help)"; return 1 ;;
+  esac
   if [[ -z "$_CA_REENTRY" ]] && _ca_ensure_latest; then
     _CA_REENTRY=1 claude-accounts "$@"; return $?
   fi
+  [[ -n "$sub" ]] && shift
+  case "$sub" in
+    '')     _ca_cmd_table ;;
+    create) _ca_cmd_create "$@" ;;
+    delete) _ca_cmd_delete "$@" ;;
+    token)  _ca_cmd_token "$@" ;;
+  esac
+}
+
+_ca_cmd_table() { _ca_py table }
+
+# The embedded Python program, one mode per job: table (the accounts table),
+# ping and save (setup-token profiles; the token arrives in CA_PING_TOKEN,
+# never as an argument).
+_ca_py() {
   _CA_EXCLUDE_CSV="${(j:,:)_CA_EXCLUDE}" python3 - "$@" << 'EOF'
 import json, glob, os, sys, re, time, hashlib, subprocess, datetime
 from concurrent.futures import ThreadPoolExecutor
 
 home = os.path.expanduser('~')
 exclude = set(filter(None, os.environ.get('_CA_EXCLUDE_CSV', '').split(',')))
-as_json = '--json' in sys.argv
 now = datetime.datetime.now().astimezone()
 warnings = []
 
@@ -370,6 +564,13 @@ def limit(u, key):
     return {'percent': None if p is None else round(p), 'resetsAt': r}
 
 def entry(profile, d, svc):
+    if profile != 'default' and os.path.exists(os.path.join(d, '.setup-token')):
+        # a setup-token profile: no Keychain read, no refresh, no usage
+        # endpoint; its numbers come from the health check (token_usage)
+        token = read_token(profile)
+        return {'profile': profile, 'dir': d, 'account': read_label(profile) or None,
+                'auth': 'token', 'tokenState': 'ok' if token else 'missing',
+                'loggedIn': bool(token), 'loginExpiresInDays': None, '_token': token}
     email = None
     try:
         cfg = json.load(open(cfg_path(profile, d)))
@@ -383,10 +584,138 @@ def entry(profile, d, svc):
     rexp = cred.get('refreshTokenExpiresAt')
     if isinstance(rexp, (int, float)):
         login_days = (rexp / 1000 - now.timestamp()) / 86400
-    return {'profile': profile, 'dir': d, 'keychainItem': svc, 'account': email,
+    return {'profile': profile, 'dir': d, 'account': email, 'auth': 'login',
             'loggedIn': logged_in,
             'loginExpiresInDays': None if login_days is None else round(login_days, 1),
             '_blob': blob, '_acct': acct, '_svc': svc}
+
+# ── setup-token profiles ───────────────────────────────────────
+# A setup token cannot read the usage endpoint (it lacks the user:profile
+# scope), but every reply to a message carries the account's limits in its
+# headers. The health check is the smallest message there is.
+PING_URL = 'https://api.anthropic.com/v1/messages'
+PING_MODEL = 'claude-haiku-4-5-20251001'
+PING_BODY = json.dumps({'model': PING_MODEL, 'max_tokens': 1,
+                        'messages': [{'role': 'user', 'content': '.'}]}, separators=(',', ':'))
+PING_TTL = 300          # at most one health check per profile per 5 minutes
+CACHE_DIR = os.path.join(home, '.cache', 'claude-accounts')
+WINDOWS = {'five_hour': '5h', 'seven_day': '7d'}
+
+def token_file(name):
+    return os.path.join(home, f'.claude-{name}', '.setup-token')
+
+def read_token(name):
+    try:
+        with open(token_file(name)) as f:
+            return f.read().strip()
+    except Exception:
+        return ''
+
+def read_label(name):
+    try:
+        path = os.path.join(home, f'.claude-{name}', '.claude-accounts.json')
+        return str(json.load(open(path)).get('label') or '')
+    except Exception:
+        return ''
+
+def ping(token):
+    # one 1-token message. The bearer header reaches curl on stdin, so the
+    # token never appears in a process argument list. Returns (status, windows);
+    # status is 0 when nothing answered.
+    r = subprocess.run(['curl', '-sS', '--max-time', '10', '-o', '/dev/null', '-D', '-',
+                        '-H', '@-',
+                        '-H', 'anthropic-version: 2023-06-01',
+                        '-H', 'anthropic-beta: oauth-2025-04-20',
+                        '-H', 'Content-Type: application/json',
+                        '-d', PING_BODY, PING_URL],
+                       input=f'Authorization: Bearer {token}\n', capture_output=True, text=True)
+    status, hdrs = 0, {}
+    for line in r.stdout.replace('\r', '').split('\n'):
+        m = re.match(r'HTTP/\S+\s+(\d{3})', line)
+        if m:                      # a later header block (after a redirect) wins
+            status, hdrs = int(m.group(1)), {}
+        elif ':' in line:
+            k, _, v = line.partition(':')
+            hdrs[k.strip().lower()] = v.strip()
+    windows = {}
+    for key, short in WINDOWS.items():
+        try:
+            util = float(hdrs[f'anthropic-ratelimit-unified-{short}-utilization'])
+            reset = int(float(hdrs[f'anthropic-ratelimit-unified-{short}-reset']))
+        except (KeyError, ValueError):
+            continue
+        windows[key] = {'utilization': round(util * 100, 2),
+                        'resets_at': datetime.datetime.fromtimestamp(reset, datetime.timezone.utc).isoformat()}
+    return status, windows
+
+def cache_path(name):
+    return os.path.join(CACHE_DIR, f'ping-{name}.json')
+
+def write_ping_cache(name, http, windows):
+    # the cache only saves a message: a write that fails must never cost the
+    # table or the health check its answer
+    tmp = f'{cache_path(name)}.{os.getpid()}.tmp'
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(tmp, 'w') as f:
+            json.dump({'ts': int(time.time()), 'http': http, **windows}, f)
+        os.replace(tmp, cache_path(name))
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+def read_ping_cache(name):
+    try:
+        c = json.load(open(cache_path(name)))
+    except Exception:
+        return None
+    return c if isinstance(c, dict) and isinstance(c.get('ts'), (int, float)) else None
+
+def cache_is_fresh(c):
+    return c is not None and time.time() - c['ts'] < PING_TTL
+
+def write_private(path, text):
+    # a sibling created with mode 600, renamed over the target: the file is
+    # never readable by others and never half written
+    tmp = f'{path}.{os.getpid()}.tmp'
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+mode = sys.argv[1] if len(sys.argv) > 1 else 'table'
+
+if mode == 'ping':
+    # prints "<http> <session %> <week %>", '-' for a missing window.
+    # exit 0 accepted (200, or 429 at the limit), 2 rejected, 3 anything else;
+    # only an accepted token's numbers are cached
+    status, windows = ping(os.environ.get('CA_PING_TOKEN', ''))
+    pct = lambda k: str(round(windows[k]['utilization'])) if k in windows else '-'
+    print(status, pct('five_hour'), pct('seven_day'))
+    if status in (200, 429):
+        write_ping_cache(sys.argv[2], status, windows)
+        sys.exit(0)
+    sys.exit(2 if status in (401, 403) else 3)
+
+if mode == 'save':
+    name = sys.argv[2]
+    pdir = os.path.join(home, f'.claude-{name}')
+    token = os.environ.get('CA_PING_TOKEN', '').strip()
+    if not token or not os.path.isdir(pdir):
+        sys.exit(1)
+    try:
+        write_private(token_file(name), token + '\n')
+        if len(sys.argv) > 3:
+            write_private(os.path.join(pdir, '.claude-accounts.json'), json.dumps({'label': sys.argv[3]}))
+    except Exception:
+        sys.exit(1)
+    sys.exit(0)
 
 rows = [entry('default', home + '/.claude', 'Claude Code-credentials')]
 for d in sorted(glob.glob(home + '/.claude-*')):
@@ -398,15 +727,40 @@ for d in sorted(glob.glob(home + '/.claude-*')):
     h = hashlib.sha256(d.encode()).hexdigest()[:8]
     rows.append(entry(name, d, f'Claude Code-credentials-{h}'))
 
+def token_usage(row):
+    # the cached health check while it is fresh, otherwise a new one. Every
+    # answer is cached, so a rejected or failing token is not pinged again
+    # within PING_TTL either; no answer at all is not cached.
+    c = read_ping_cache(row['profile'])
+    if not cache_is_fresh(c):
+        status, windows = ping(row['_token'])
+        c = {'http': status, **windows}
+        if status:
+            write_ping_cache(row['profile'], status, windows)
+    return c
+
+def usage_for(r):
+    if not r['loggedIn']:
+        return None
+    return token_usage(r) if r['auth'] == 'token' else fetch_usage(r)
+
 with ThreadPoolExecutor(max_workers=8) as ex:
-    usages = list(ex.map(lambda r: fetch_usage(r) if r['loggedIn'] else None, rows))
+    usages = list(ex.map(usage_for, rows))
 
 for r, res in zip(rows, usages):
     for k in [k for k in r if k.startswith('_')]:
         del r[k]
+    if r['auth'] == 'token' and res is not None:
+        http = res.get('http')
+        if http in (401, 403):
+            r['tokenState'], r['loggedIn'], res = 'rejected', False, None
+        elif http in (200, 429):          # 429: the account is at its limit
+            res = {'u': {k: res[k] for k in WINDOWS if k in res}}
+        else:
+            warnings.append(f"{r['profile']}: health check got no answer, usage not shown" if not http else
+                            f"{r['profile']}: health check returned HTTP {http}, usage not shown")
+            res = None
     u = (res or {}).get('u')
-    r['stale'] = bool(res and res['stale'])
-    r['usageFetchedAtMs'] = (res or {}).get('fetchedAtMs')
     scoped = []
     for l in (u or {}).get('limits') or []:
         name = (((l.get('scope') or {}).get('model') or {}).get('display_name'))
@@ -420,12 +774,6 @@ for r, res in zip(rows, usages):
         'weekOpus': limit(u, 'seven_day_opus'),
         'weekSonnet': limit(u, 'seven_day_sonnet'),
         'scopedWeekly': scoped}
-
-if as_json:
-    print(json.dumps(rows, indent=2))
-    for msg in warnings:
-        print('  ✗ ' + msg, file=sys.stderr)
-    sys.exit(0)
 
 # ── design 1: gradient bar table ───────────────────────────────
 use_color = sys.stdout.isatty() and 'NO_COLOR' not in os.environ
@@ -470,6 +818,15 @@ def limit_cell(r, l, out_text='-', bar_w=10, show_reset=True):
                 f"{pre_c}{c(pcolor(p), f'{p:3d}%')}{suf_c}")
 
 def login_cell(r, tight=False):
+    if r['auth'] == 'token':
+        if r['tokenState'] == 'ok':
+            return Cell('✓ token', c(GREEN, '✓ token'))
+        fix = f"claude-accounts token {r['profile']}"
+        if r['tokenState'] == 'rejected':
+            t = '✗ rejected' if tight else f'✗ token rejected · {fix}'
+        else:
+            t = '✗ no token' if tight else f'✗ no token · {fix}'
+        return Cell(t, c(RED, t))
     if not r['loggedIn']:
         t = '✗ out' if tight else '✗ /login'
         return Cell(t, c(RED, t))

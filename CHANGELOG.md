@@ -108,7 +108,31 @@ Fixes the token refresh, which never actually worked against the real endpoint.
   a parent mapping would otherwise apply; the wrapper treats that value as
   "no CLAUDE_CONFIG_DIR". Extension version 0.1.1.
 
-## Unreleased
+## 2.2.0 (unreleased)
 
-- `claude-help`: lists every command plus the dynamic `claude-<name>` aliases
-  present on this machine.
+- One entry point for every command: `claude-accounts` (the table),
+  `claude-accounts create <name>`, `claude-accounts delete <name>`,
+  `claude-accounts update`, and `claude-accounts help` (also `--help` and `-h`),
+  which lists every command plus the `claude-<name>` aliases present on this
+  machine. The `claude-<name>` launchers are unchanged.
+- The old names `claude-create`, `claude-delete`, `claude-help` and
+  `claude-accounts-update` still work in this release and print a note naming
+  the new form. They will be removed in the next release.
+- `--json` is removed. Unknown commands and flags now exit 1 with a pointer to
+  `claude-accounts help` instead of being ignored.
+- `claude-accounts create <name> --token`: a profile that signs in with a setup
+  token from `claude setup-token` instead of the browser login. The token is
+  pasted at a prompt that shows one `*` per character, checked with a one-token message before anything
+  is saved, and kept in `~/.claude-<name>/.setup-token` (mode 600).
+  `claude-<name>` hands it to Claude Code at launch, for that process only.
+  `claude-accounts delete` and the uninstaller remove it.
+- `claude-accounts token <name>`: replace a token profile's token. The old one
+  stays if the new one is rejected.
+- Token profiles in the table and in VS Code: session and weekly limits come
+  from a one-token health check, sent only when `claude-accounts` runs and at
+  most once per 5 minutes per account. ACCOUNT shows a label you type, LOGIN
+  shows the token's state. VS Code windows mapped to a token profile start
+  Claude with its token, and the extension shows the table's last numbers
+  without sending anything itself.
+- The VS Code extension now carries the same version as the tool (2.2.0, up from
+  0.1.1), and the release workflow refuses a tag that either one does not match.

@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+# Test double for macOS `security`: a Keychain kept as one JSON file per
+# service under $HOME/.fake-keychain/. Covers the generic-password calls
+# claude-accounts makes. Every call is logged to $HOME/.calls/security.log
+# with any -X value masked.
+import json
+import os
+import sys
+
+home = os.environ['HOME']
+store = os.path.join(home, '.fake-keychain')
+calls = os.path.join(home, '.calls')
+os.makedirs(store, exist_ok=True)
+os.makedirs(calls, exist_ok=True)
+
+args = sys.argv[1:]
+logged = ['***' if i > 0 and args[i - 1] == '-X' else a for i, a in enumerate(args)]
+with open(os.path.join(calls, 'security.log'), 'a') as f:
+    f.write(' '.join(logged) + '\n')
+
+
+def opt(flag):
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def item_path(service):
+    return os.path.join(store, service.replace('/', '_'))
+
+
+def load(service, acct):
+    p = item_path(service or '')
+    if not service or not os.path.exists(p):
+        return None
+    item = json.load(open(p))
+    if acct is not None and item.get('acct') != acct:
+        return None
+    return item
+
+
+NOT_FOUND = 'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.'
+cmd = args[0] if args else ''
+svc, acct = opt('-s'), opt('-a')
+
+if cmd == 'find-generic-password':
+    item = load(svc, acct)
+    if item is None:
+        print(NOT_FOUND, file=sys.stderr)
+        sys.exit(44)
+    if '-w' in args:
+        print(item['password'])
+    else:
+        print('keychain: "/fake/login.keychain-db"')
+        print('attributes:')
+        print(f'    "acct"<blob>="{item.get("acct", "")}"')
+        print(f'    "svce"<blob>="{svc}"')
+    sys.exit(0)
+
+if cmd == 'add-generic-password':
+    if load(svc, None) is not None and '-U' not in args:
+        print('security: The specified item already exists in the keychain.', file=sys.stderr)
+        sys.exit(45)
+    hexed = opt('-X')
+    password = bytes.fromhex(hexed).decode() if hexed is not None else (opt('-w') or '')
+    with open(item_path(svc), 'w') as f:
+        json.dump({'acct': acct or '', 'password': password}, f)
+    sys.exit(0)
+
+if cmd == 'delete-generic-password':
+    if load(svc, acct) is None:
+        print(NOT_FOUND, file=sys.stderr)
+        sys.exit(44)
+    os.remove(item_path(svc))
+    print('password has been deleted.')
+    sys.exit(0)
+
+print(f'fake security: unsupported command {cmd!r}', file=sys.stderr)
+sys.exit(2)

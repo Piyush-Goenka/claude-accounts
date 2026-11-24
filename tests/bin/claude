@@ -1,0 +1,5 @@
+#!/bin/zsh -f
+# Test double for the claude binary: reports what it was started with.
+print -r -- "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-<unset>}"
+print -r -- "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN-<unset>}"
+print -r -- "ARGS=$*"

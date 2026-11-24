@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# Test double for curl. Answers the four endpoints claude-accounts talks to
+# from fixtures, never the network. Controlled by environment variables:
+#   FAKE_PING   ok (200, default) | 429 | 401 | 404 | neterr   for /v1/messages
+#   FAKE_5H     5-hour utilization fraction in ping headers (default 0.05)
+#   FAKE_7D     7-day utilization fraction in ping headers (default 0.20)
+#   FAKE_USAGE  ok (default) | fail                         for /api/oauth/usage
+# Logs under $HOME/.calls/: the URL to curl.log, the arguments to
+# curl-argv.log, and anything read from stdin to curl-stdin.log.
+import datetime
+import json
+import os
+import sys
+import time
+
+home = os.environ['HOME']
+calls = os.path.join(home, '.calls')
+os.makedirs(calls, exist_ok=True)
+
+VALUED = {'--max-time', '--connect-timeout', '-o', '--output', '-D', '--dump-header',
+          '-w', '--write-out', '-H', '--header', '-d', '--data', '--data-binary',
+          '--data-raw', '-X', '--request', '-A', '--user-agent'}
+FLAGS = set('sSfLk')
+
+args = sys.argv[1:]
+opts, headers, url = {}, [], None
+fail_on_http, stdin_text = False, ''
+i = 0
+while i < len(args):
+    a = args[i]
+    if a in VALUED:
+        v = args[i + 1] if i + 1 < len(args) else ''
+        if a in ('-H', '--header'):
+            if v == '@-':
+                stdin_text = sys.stdin.read()
+                headers += [h for h in stdin_text.splitlines() if h.strip()]
+            else:
+                headers.append(v)
+        else:
+            opts[a] = v
+            if a in ('-d', '--data', '--data-binary', '--data-raw') and v == '@-':
+                stdin_text = sys.stdin.read()
+        i += 2
+        continue
+    if a.startswith('-') and not a.startswith('--') and len(a) > 1 and set(a[1:]) <= FLAGS:
+        fail_on_http = fail_on_http or 'f' in a
+        i += 1
+        continue
+    if not a.startswith('-'):
+        url = a
+    i += 1
+
+with open(os.path.join(calls, 'curl.log'), 'a') as f:
+    f.write(f'{url}\n')
+with open(os.path.join(calls, 'curl-argv.log'), 'a') as f:
+    f.write(' '.join(args) + '\n')
+if stdin_text:
+    with open(os.path.join(calls, 'curl-stdin.log'), 'a') as f:
+        f.write(stdin_text if stdin_text.endswith('\n') else stdin_text + '\n')
+
+
+def opt(*names):
+    for n in names:
+        if n in opts:
+            return opts[n]
+    return None
+
+
+def write_out(code):
+    fmt = opt('-w', '--write-out')
+    if fmt is not None:
+        sys.stdout.write(fmt.replace('\\n', '\n').replace('%{http_code}', f'{code:03d}'))
+
+
+def respond(code, body, extra_headers=()):
+    head = [f'HTTP/2 {code}', 'content-type: application/json', *extra_headers]
+    dump = opt('-D', '--dump-header')
+    raw = ''.join(h + '\r\n' for h in head) + '\r\n'
+    if dump == '-':
+        sys.stdout.write(raw)
+    elif dump:
+        open(dump, 'w').write(raw)
+    if fail_on_http and code >= 400:
+        print(f'curl: (22) The requested URL returned error: {code}', file=sys.stderr)
+        sys.exit(22)
+    out = opt('-o', '--output')
+    if out:
+        if out != '/dev/null':
+            open(out, 'w').write(body)
+    else:
+        sys.stdout.write(body)
+    write_out(code)
+    sys.exit(0)
+
+
+def iso(epoch):
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat()
+
+
+now = int(time.time())
+error = lambda kind: json.dumps({'type': 'error', 'error': {'type': kind, 'message': kind}})
+
+if url == 'https://api.anthropic.com/v1/messages':
+    mode = os.environ.get('FAKE_PING', 'ok')
+    if mode == 'neterr':
+        print('curl: (7) Failed to connect to api.anthropic.com port 443', file=sys.stderr)
+        write_out(0)
+        sys.exit(7)
+    limits = [f'anthropic-ratelimit-unified-5h-utilization: {os.environ.get("FAKE_5H", "0.05")}',
+              f'anthropic-ratelimit-unified-5h-reset: {now + 7200}',
+              f'anthropic-ratelimit-unified-7d-utilization: {os.environ.get("FAKE_7D", "0.20")}',
+              f'anthropic-ratelimit-unified-7d-reset: {now + 6 * 86400}']
+    if mode == 'ok':
+        respond(200, json.dumps({'type': 'message', 'content': [{'type': 'text', 'text': '.'}],
+                                 'usage': {'input_tokens': 8, 'output_tokens': 1}}), limits)
+    if mode == '429':
+        respond(429, error('rate_limit_error'), limits)
+    if mode == '401':
+        respond(401, error('authentication_error'))
+    respond(int(mode) if mode.isdigit() else 404, error('not_found_error'))
+
+if url == 'https://api.anthropic.com/api/oauth/usage':
+    if os.environ.get('FAKE_USAGE', 'ok') == 'fail':
+        respond(500, error('api_error'))
+    respond(200, json.dumps({
+        'five_hour': {'utilization': 11.0, 'resets_at': iso(now + 7200)},
+        'seven_day': {'utilization': 1.0, 'resets_at': iso(now + 6 * 86400)},
+        'limits': [{'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'Fable'}},
+                    'percent': 0, 'resets_at': iso(now + 6 * 86400)}]}))
+
+if url == 'https://platform.claude.com/v1/oauth/token':
+    respond(400, json.dumps({'error': 'invalid_grant'}))
+
+if url and ('github.com' in url):
+    print('curl: (22) The requested URL returned error: 404', file=sys.stderr)
+    sys.exit(22)
+
+print(f'curl: (6) Could not resolve host: {url}', file=sys.stderr)
+sys.exit(6)

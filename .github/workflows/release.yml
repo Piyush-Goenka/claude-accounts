@@ -26,14 +26,16 @@ jobs:
       - name: Install zsh
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
 
-      - name: Verify the version constant matches the tag
+      - name: Verify the tool and extension versions match the tag
         run: |
           set -euo pipefail
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           FILE_VERSION="$(sed -n 's/^CLAUDE_ACCOUNTS_VERSION="\(.*\)"/\1/p' claude-accounts.zsh | head -1)"
+          EXT_VERSION="$(sed -n 's/^  "version": "\(.*\)",/\1/p' vscode-claude-switch/package.json | head -1)"
 
-          echo "tag      : $GITHUB_REF_NAME  ->  $TAG_VERSION"
-          echo "constant : ${FILE_VERSION:-<unreadable>}"
+          echo "tag       : $GITHUB_REF_NAME  ->  $TAG_VERSION"
+          echo "constant  : ${FILE_VERSION:-<unreadable>}"
+          echo "extension : ${EXT_VERSION:-<unreadable>}"
 
           if [ -z "$FILE_VERSION" ]; then
             echo "::error file=claude-accounts.zsh::could not read CLAUDE_ACCOUNTS_VERSION"
@@ -52,8 +54,16 @@ jobs:
             exit 1
           fi
 
+          # the VS Code extension ships in the same release and carries the same version
+          if [ "$TAG_VERSION" != "$EXT_VERSION" ]; then
+            echo "::error file=vscode-claude-switch/package.json::extension version is \"${EXT_VERSION:-<unreadable>}\" but this tag is \"$TAG_VERSION\""
+            echo "The extension and the tool share one version: set \"version\": \"$TAG_VERSION\""
+            echo "in vscode-claude-switch/package.json, commit, delete this tag, and re-tag."
+            exit 1
+          fi
+
           echo "VERSION=$TAG_VERSION" >> "$GITHUB_ENV"
-          echo "ok: constant matches the tag"
+          echo "ok: constant and extension both match the tag"
 
       - name: Syntax-check the shipped scripts
         run: |

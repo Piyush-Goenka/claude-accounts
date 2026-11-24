@@ -15,7 +15,7 @@ skip() { row '2'        '·' "$1" "${2:-}"; }
 nxt()  { printf '\n  %s  %s\n' "$(c '1;38;5;173' 'next')" "$(c '1' "$1")"; }
 
 echo ""
-# remove every profile except the default account (same steps as claude-delete)
+# remove every profile except the default account (same steps as claude-accounts delete)
 for d in "$HOME"/.claude-*/; do
   [[ -d "$d" ]] || continue
   d="${d%/}"
@@ -26,6 +26,7 @@ for d in "$HOME"/.claude-*/; do
   rm -rf "$d"
   ok "profile removed" "$name"
 done
+rm -rf "$HOME/.cache/claude-accounts"   # health-check numbers of token profiles
 
 if [[ -f "$DEST" ]]; then
   rm -f "$DEST" "$DEST.bak" "$HOME/.cache/claude-accounts-check"

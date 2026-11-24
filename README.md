@@ -25,19 +25,22 @@ terminal and reload any open VS Code windows.
 ## Usage
 
 ```bash
-claude-create mohan     # create profile → prints next steps
-claude-mohan            # launch it → run /login once
-claude-accounts         # colorful table of all accounts: live usage bars + login state
-claude-delete mohan     # remove profile
-claude-help             # list every command + the profile aliases on this Mac
+claude-accounts create mohan   # create profile → prints next steps
+claude-mohan                   # launch it → run /login once
+claude-accounts                # colorful table of all accounts: live usage bars + login state
+claude-accounts delete mohan   # remove profile
+claude-accounts help           # list every command + the profile aliases on this Mac
 ```
+
+The older names (`claude-create`, `claude-delete`, `claude-help`,
+`claude-accounts-update`) still work for one release and print a note naming
+the new form.
 
 `claude-accounts` shows, per account, the session (5-hour) and weekly usage in
 percent with reset times (fetched live from Anthropic's usage endpoint, the same
 one `/usage` inside Claude Code hits) and the login state, including how many
-days until the login (refresh token) expires. Add `--json` for machine-readable
-output. Dirs like `~/.claude-science` (the Claude research beta) that are not
-account profiles are excluded automatically.
+days until the login (refresh token) expires. Dirs like `~/.claude-science` (the
+Claude research beta) that are not account profiles are excluded automatically.
 
 The numbers are live for every account, not only the one you last used. An
 access token lives about 8 hours and Claude Code only renews the one belonging
@@ -56,6 +59,39 @@ countdown for every account so no login dies silently.
 your main account. When the login page opens, pick **"use a different account"**
 or copy the URL into an **incognito window**, then sign in with the second
 account's credentials.
+
+## Setup-token accounts
+
+An account can also sign in with a long-lived setup token instead of the
+browser login. In one terminal run `claude setup-token` and sign in as the
+account you want (the first-login tip above applies). It prints a token. Then:
+
+```bash
+claude-accounts create work --token   # paste the token when asked; it shows as ****
+claude-work                           # already signed in, no /login
+claude-accounts token work            # later: replace an expired or revoked token
+```
+
+The token is checked with a one-token message before anything is saved, so a
+mistyped or revoked token leaves nothing behind. It is kept in
+`~/.claude-work/.setup-token`, readable only by you. It is a long-lived
+credential: backups and copies of that folder carry it, and
+`claude-accounts delete work` removes it. `claude-work`, and VS Code windows
+mapped to `work`, hand it to Claude Code when they start, so stop exporting
+`CLAUDE_CODE_OAUTH_TOKEN` by hand: a value exported in your shell reaches every
+`claude` you start, whichever profile it is.
+
+In the table, a token account cannot use the usage endpoint (the token is not
+allowed to read the account), so `claude-accounts` sends a one-token
+health-check message instead and reads the session and weekly limits from the
+reply. It does that only when you run `claude-accounts`, and at most once every
+5 minutes per account. The reply has no per-model weekly limits, so those
+columns show `-`; ACCOUNT shows the label you typed, since a token cannot look
+up the account's email; LOGIN shows `✓ token`, `✗ token rejected` (replace it
+with `claude-accounts token <name>`) or `✗ no token`.
+
+The default account (`claude`) keeps its browser login; setup tokens are for
+named profiles only.
 
 ## VS Code: per-window accounts (claude-switch)
 
@@ -83,7 +119,7 @@ removes the wrapper and mapping cleanly.
 
 You never have to think about updates. Every command checks for a newer release
 (at most once per day, 3-second network cap, offline never blocks) and updates
-itself **before** running. Manual check: `claude-accounts-update`.
+itself **before** running. Manual check: `claude-accounts update`.
 
 The VS Code extension updates ride along: when a newer release is installed,
 the extension files are refreshed from the same release (asset

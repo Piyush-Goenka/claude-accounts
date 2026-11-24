@@ -71,5 +71,5 @@ else
 fi
 
 nxt "open a new terminal   (or: source ~/.zshrc)"
-dim "      claude-create <name>  →  claude-<name>  →  /login"
+dim "      claude-accounts create <name>  →  claude-<name>  →  /login"
 echo ""

@@ -113,7 +113,39 @@ function extractUsage(u) {
   return { session: pct(u.five_hour), week: pct(u.seven_day), scoped };
 }
 
+// ── setup-token profiles ──────────────────────────────────────────
+// A profile with ~/.claude-<name>/.setup-token signs in with that token, which
+// the wrapper hands to Claude. This extension never reads the token and never
+// pings: it shows what the claude-accounts table last cached.
+
+function tokenFileSize(profile) {
+  if (profile.name === 'default') return null;
+  try { return fs.statSync(path.join(profile.dir, '.setup-token')).size; } catch (e) { return null; }
+}
+
+function tokenUsage(cache) {
+  if (!cache || typeof cache.ts !== 'number') return null;
+  // a window's number stops meaning anything once that window has reset
+  const pct = (w) => (w && w.utilization != null && Date.parse(w.resets_at) > Date.now())
+    ? Math.round(w.utilization) : null;
+  return { session: pct(cache.five_hour), week: pct(cache.seven_day), scoped: [], asOf: cache.ts * 1000 };
+}
+
+function tokenProfileInfo(profile) {
+  const size = tokenFileSize(profile);
+  if (size === null) return null;
+  const label = (readJson(path.join(profile.dir, '.claude-accounts.json')) || {}).label || null;
+  const cache = readJson(path.join(os.homedir(), '.cache', 'claude-accounts', `ping-${profile.name}.json`));
+  const tokenState = size === 0 ? 'missing'
+    : (cache && (cache.http === 401 || cache.http === 403)) ? 'rejected' : 'ok';
+  const loggedIn = tokenState === 'ok';
+  return { name: profile.name, dir: profile.dir, email: label, loggedIn, loginDays: null,
+    usage: loggedIn ? tokenUsage(cache) : null, auth: 'token', tokenState };
+}
+
 async function accountInfo(profile) {
+  const tokenInfo = tokenProfileInfo(profile);
+  if (tokenInfo) return tokenInfo;
   const cfg = readJson(profile.cfg) || {};
   const email = (cfg.oauthAccount || {}).emailAddress || null;
   const cred = await readCred(profile);
@@ -191,6 +223,13 @@ function mappedProfile(folder) { return mappedProfileIn(readMap(), folder); }
 
 function fmtUsage(info) {
   if (!info.loggedIn) return 'logged out';
+  if (info.auth === 'token') {
+    const u = info.usage;
+    if (!u || (u.session == null && u.week == null)) return 'usage n/a';
+    const at = new Date(u.asOf);
+    const hhmm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+    return `S ${u.session != null ? u.session : '?'}% · W ${u.week != null ? u.week : '?'}% · as of ${hhmm}`;
+  }
   if (!info.usage || info.usage.session == null) return 'usage n/a';
   let s = `S ${info.usage.session}% · W ${info.usage.week != null ? info.usage.week : '?'}%`;
   for (const sc of (info.usage.scoped || [])) s += ` · ${sc.name.toUpperCase()} ${sc.percent}%`;
@@ -198,6 +237,10 @@ function fmtUsage(info) {
 }
 
 function fmtLogin(info) {
+  if (info.auth === 'token') {
+    if (info.tokenState === 'ok') return '✓ token';
+    return info.tokenState === 'rejected' ? '✗ token rejected' : '✗ no token';
+  }
   if (!info.loggedIn) return '✗ logged out';
   const d = info.loginDays;
   if (d == null) return '✓ ok';
@@ -389,4 +432,5 @@ async function activate(context) {
 
 function deactivate() { }
 
-module.exports = { activate, deactivate };
+// _internals: for tests/extension.test.js only
+module.exports = { activate, deactivate, _internals: { accountInfo, fmtLogin, fmtUsage } };
